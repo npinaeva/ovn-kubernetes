@@ -20,6 +20,7 @@ import (
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	ovnretry "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/selector_based_handler"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -121,7 +122,7 @@ type BaseNetworkController struct {
 
 	netpolSharedPGController *NetpolSharedPortGroupsController
 
-	podSelectorAddressSets *syncmap.SyncMap[*PodSelectorAddressSet]
+	podAddressSetController *PodAddressSetController
 
 	// stopChan per controller
 	stopChan chan struct{}
@@ -132,6 +133,9 @@ type BaseNetworkController struct {
 	// If the map is nil, it means the controller is not tracking the node events
 	// and all the nodes are considered as local zone nodes.
 	localZoneNodes *sync.Map
+
+	podSelectorHandler       *selector_based_handler.EventBasedWatcher
+	namespaceSelectorHandler *selector_based_handler.EventBasedWatcher
 }
 
 func NewBaseNetworkController(cnci *CommonNetworkControllerInfo, addressSetFactory addressset.AddressSetFactory,
@@ -146,7 +150,6 @@ func NewBaseNetworkController(cnci *CommonNetworkControllerInfo, addressSetFacto
 		namespacesMutex:             sync.Mutex{},
 		addressSetFactory:           addressSetFactory,
 		networkPolicies:             syncmap.NewSyncMap[*networkPolicy](),
-		podSelectorAddressSets:      syncmap.NewSyncMap[*PodSelectorAddressSet](),
 		stopChan:                    stopChan,
 		wg:                          wg,
 	}
@@ -186,6 +189,30 @@ func NewCommonNetworkControllerInfo(client clientset.Interface, kube *kube.KubeO
 		svcTemplateSupport: svcTemplateSupport,
 		zone:               zone,
 	}, nil
+}
+
+// initSelectorBasedHandlers creates shared resources for selector-based handling.
+// for now it is only used by network policy
+func (bnc *BaseNetworkController) initSelectorBasedHandlers() {
+	bnc.podSelectorHandler = selector_based_handler.NewEventBasedWatcher(factory.PodSelectorType, bnc.watchFactory.PodInformer(),
+		bnc.watchFactory, bnc.stopChan, bnc.wg)
+	bnc.namespaceSelectorHandler = selector_based_handler.NewEventBasedWatcher(factory.NamespaceSelectorType, bnc.watchFactory.NamespaceInformer().Informer(),
+		bnc.watchFactory, bnc.stopChan, bnc.wg)
+	bnc.podAddressSetController = NewPodAddressSetController(bnc.controllerName,
+		bnc.addressSetFactory, bnc.watchFactory, bnc.NetInfo, bnc.podSelectorHandler, bnc.namespaceSelectorHandler)
+}
+
+func (bnc *BaseNetworkController) StartSelectorBasedHandlers() error {
+	err := bnc.podSelectorHandler.Watch()
+	if err != nil {
+		return err
+	}
+	return bnc.namespaceSelectorHandler.Watch()
+}
+
+func (bnc *BaseNetworkController) StopSelectorBasedHandlers() {
+	bnc.podSelectorHandler.Stop()
+	bnc.namespaceSelectorHandler.Stop()
 }
 
 func (bnc *BaseNetworkController) GetLogicalPortName(pod *kapi.Pod, nadName string) string {

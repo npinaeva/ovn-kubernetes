@@ -239,6 +239,7 @@ func (oc *DefaultNetworkController) initRetryFramework() {
 	oc.retryEgressFwNodes = oc.newRetryFramework(factory.EgressFwNodeType)
 	oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
 	oc.retryNetworkPolicies = oc.newRetryFramework(factory.PolicyType)
+	oc.initSelectorBasedHandlers()
 }
 
 // newRetryFramework builds and returns a retry framework for the input resource

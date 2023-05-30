@@ -737,7 +737,7 @@ func (bnc *BaseNetworkController) setupGressPolicy(np *networkPolicy, gp *gressP
 	} else {
 		// use podSelector address set
 		// np.namespace will be used when fromJSON.NamespaceSelector = nil
-		asKey, ipv4as, ipv6as, err := bnc.EnsurePodSelectorAddressSet(
+		asKey, ipv4as, ipv6as, err := bnc.podAddressSetController.EnsureAddressSet(
 			podSelector, peer.NamespaceSelector, np.namespace, np.getKeyWithKind())
 		// even if GetPodSelectorAddressSet failed, add key for future cleanup or retry.
 		np.peerAddressSets = append(np.peerAddressSets, asKey)
@@ -894,7 +894,7 @@ func (bnc *BaseNetworkController) cleanupNetworkPolicy(np *networkPolicy) error 
 
 	// delete from peer address set
 	for i, asKey := range np.peerAddressSets {
-		if err := bnc.DeletePodSelectorAddressSet(asKey, np.getKeyWithKind()); err != nil {
+		if err := bnc.podAddressSetController.DeleteAddressSet(asKey, np.getKeyWithKind()); err != nil {
 			// remove deleted address sets from the list
 			np.peerAddressSets = np.peerAddressSets[i:]
 			return fmt.Errorf("failed to delete network policy from peer address set %s: %v", asKey, err)

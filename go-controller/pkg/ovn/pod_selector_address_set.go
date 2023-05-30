@@ -16,6 +16,8 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/selector_based_handler"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
@@ -37,8 +39,10 @@ type PodSelectorAddressSet struct {
 	// Must only be changed with oc.podSelectorAddressSets Lock.
 	backRefs map[string]bool
 
-	// handler is either pod or namespace handler
-	handler *factory.Handler
+	// handlerIdx is either pod or namespace selector handler idx
+	// only one of them should be filled
+	podHandlerIdx int
+	nsHandlerIdx  int
 
 	podSelector       labels.Selector
 	namespaceSelector labels.Selector
@@ -53,7 +57,31 @@ type PodSelectorAddressSet struct {
 	handlerResources *PodSelectorAddrSetHandlerInfo
 }
 
-// EnsurePodSelectorAddressSet returns address set for requested (podSelector, namespaceSelector, namespace).
+type PodAddressSetController struct {
+	podSelectorAddressSets   *syncmap.SyncMap[*PodSelectorAddressSet]
+	controllerName           string
+	addressSetFactory        addressset.AddressSetFactory
+	watchFactory             *factory.WatchFactory
+	netInfo                  util.NetInfo
+	podSelectorHandler       *selector_based_handler.EventBasedWatcher
+	namespaceSelectorHandler *selector_based_handler.EventBasedWatcher
+}
+
+func NewPodAddressSetController(controllerName string, addressSetFactory addressset.AddressSetFactory,
+	watchFactory *factory.WatchFactory, netInfo util.NetInfo, podSelectorHandler,
+	namespaceSelectorHandler *selector_based_handler.EventBasedWatcher) *PodAddressSetController {
+	return &PodAddressSetController{
+		podSelectorAddressSets:   syncmap.NewSyncMap[*PodSelectorAddressSet](),
+		controllerName:           controllerName,
+		addressSetFactory:        addressSetFactory,
+		watchFactory:             watchFactory,
+		netInfo:                  netInfo,
+		podSelectorHandler:       podSelectorHandler,
+		namespaceSelectorHandler: namespaceSelectorHandler,
+	}
+}
+
+// EnsureAddressSet returns address set for requested (podSelector, namespaceSelector, namespace).
 // If namespaceSelector is nil, namespace will be used with podSelector statically.
 // podSelector should not be nil, use metav1.LabelSelector{} to match all pods.
 // namespaceSelector can only be nil when namespace is set, use metav1.LabelSelector{} to match all namespaces.
@@ -62,9 +90,9 @@ type PodSelectorAddressSet struct {
 // but both cases will work here too.
 //
 // backRef is the key that should be used for cleanup.
-// if err != nil, cleanup is required by calling DeletePodSelectorAddressSet or EnsurePodSelectorAddressSet again.
+// if err != nil, cleanup is required by calling DeleteAddressSet or EnsureAddressSet again.
 // psAddrSetHashV4, psAddrSetHashV6 may be set to empty string if address set for that ipFamily wasn't created.
-func (bnc *BaseNetworkController) EnsurePodSelectorAddressSet(podSelector, namespaceSelector *metav1.LabelSelector,
+func (c *PodAddressSetController) EnsureAddressSet(podSelector, namespaceSelector *metav1.LabelSelector,
 	namespace, backRef string) (addrSetKey, psAddrSetHashV4, psAddrSetHashV6 string, err error) {
 	if podSelector == nil {
 		err = fmt.Errorf("pod selector is nil")
@@ -93,8 +121,8 @@ func (bnc *BaseNetworkController) EnsurePodSelectorAddressSet(podSelector, names
 		return
 	}
 	addrSetKey = getPodSelectorKey(podSelector, namespaceSelector, namespace)
-	err = bnc.podSelectorAddressSets.DoWithLock(addrSetKey, func(key string) error {
-		psAddrSet, found := bnc.podSelectorAddressSets.Load(key)
+	err = c.podSelectorAddressSets.DoWithLock(addrSetKey, func(key string) error {
+		psAddrSet, found := c.podSelectorAddressSets.Load(key)
 		if !found {
 			psAddrSet = &PodSelectorAddressSet{
 				key:               key,
@@ -102,24 +130,26 @@ func (bnc *BaseNetworkController) EnsurePodSelectorAddressSet(podSelector, names
 				podSelector:       podSel,
 				namespaceSelector: nsSel,
 				namespace:         namespace,
-				addrSetDbIDs:      getPodSelectorAddrSetDbIDs(addrSetKey, bnc.controllerName),
+				addrSetDbIDs:      getPodSelectorAddrSetDbIDs(addrSetKey, c.controllerName),
+				podHandlerIdx:     selector_based_handler.NoHandler,
+				nsHandlerIdx:      selector_based_handler.NoHandler,
 			}
-			err = psAddrSet.init(bnc)
+			err = psAddrSet.init(c)
 			// save object anyway for future use or cleanup
-			bnc.podSelectorAddressSets.LoadOrStore(key, psAddrSet)
+			c.podSelectorAddressSets.LoadOrStore(key, psAddrSet)
 			if err != nil {
 				psAddrSet.needsCleanup = true
 				return fmt.Errorf("failed to init pod selector address set %s: %v", addrSetKey, err)
 			}
 		}
 		if psAddrSet.needsCleanup {
-			cleanupErr := psAddrSet.destroy(bnc)
+			cleanupErr := psAddrSet.destroy(c)
 			if cleanupErr != nil {
 				return fmt.Errorf("failed to cleanup pod selector address set %s: %v", addrSetKey, err)
 			}
 			// psAddrSet.destroy will set psAddrSet.needsCleanup to false if no error was returned
 			// try to init again
-			err = psAddrSet.init(bnc)
+			err = psAddrSet.init(c)
 			if err != nil {
 				psAddrSet.needsCleanup = true
 				return fmt.Errorf("failed to init pod selector address set %s after cleanup: %v", addrSetKey, err)
@@ -136,89 +166,100 @@ func (bnc *BaseNetworkController) EnsurePodSelectorAddressSet(podSelector, names
 	return
 }
 
-func (bnc *BaseNetworkController) DeletePodSelectorAddressSet(addrSetKey, backRef string) error {
-	return bnc.podSelectorAddressSets.DoWithLock(addrSetKey, func(key string) error {
-		psAddrSet, found := bnc.podSelectorAddressSets.Load(key)
+func (c *PodAddressSetController) DeleteAddressSet(addrSetKey, backRef string) error {
+	return c.podSelectorAddressSets.DoWithLock(addrSetKey, func(key string) error {
+		psAddrSet, found := c.podSelectorAddressSets.Load(key)
 		if !found {
 			return nil
 		}
 		delete(psAddrSet.backRefs, backRef)
 		if len(psAddrSet.backRefs) == 0 {
-			err := psAddrSet.destroy(bnc)
+			err := psAddrSet.destroy(c)
 			if err != nil {
 				// psAddrSet.destroy will set psAddrSet.needsCleanup to true in case of error,
 				// cleanup should be retried later
 				return fmt.Errorf("failed to destroy pod selector address set %s: %v", addrSetKey, err)
 			}
-			bnc.podSelectorAddressSets.Delete(key)
+			c.podSelectorAddressSets.Delete(key)
 		}
 		return nil
 	})
 }
 
-func (psas *PodSelectorAddressSet) init(bnc *BaseNetworkController) error {
+func (psas *PodSelectorAddressSet) init(c *PodAddressSetController) error {
 	// create pod handler resources before starting the handlers
 	if psas.handlerResources == nil {
-		as, err := bnc.addressSetFactory.NewAddressSet(psas.addrSetDbIDs, nil)
+		as, err := c.addressSetFactory.NewAddressSet(psas.addrSetDbIDs, nil)
 		if err != nil {
 			return err
 		}
-		ipv4Mode, ipv6Mode := bnc.IPMode()
 		psas.handlerResources = &PodSelectorAddrSetHandlerInfo{
 			addressSet:        as,
 			key:               psas.key,
 			podSelector:       psas.podSelector,
 			namespaceSelector: psas.namespaceSelector,
 			namespace:         psas.namespace,
-			netInfo:           bnc.NetInfo,
-			ipv4Mode:          ipv4Mode,
-			ipv6Mode:          ipv6Mode,
+			netInfo:           c.netInfo,
 		}
 	}
 
-	var err error
-	if psas.handler == nil {
+	if psas.podHandlerIdx == selector_based_handler.NoHandler && psas.nsHandlerIdx == selector_based_handler.NoHandler {
+		var err error
+		var podHandlerIdx, nsHandlerIdx int
 		if psas.namespace != "" {
 			// static namespace
 			if psas.podSelector.Empty() {
 				// nil selector means no filtering
-				err = bnc.addPodSelectorHandler(psas, nil, psas.namespace)
+				podHandlerIdx, err = c.addPodSelectorHandler(psas.handlerResources, nil, psas.namespace)
 			} else {
 				// namespaced pod selector
-				err = bnc.addPodSelectorHandler(psas, psas.podSelector, psas.namespace)
+				podHandlerIdx, err = c.addPodSelectorHandler(psas.handlerResources, psas.podSelector, psas.namespace)
 			}
 		} else if psas.namespaceSelector.Empty() {
 			// any namespace
 			if psas.podSelector.Empty() {
 				// all cluster pods
-				err = bnc.addPodSelectorHandler(psas, nil, "")
+				podHandlerIdx, err = c.addPodSelectorHandler(psas.handlerResources, nil, "")
 			} else {
 				// global pod selector
-				err = bnc.addPodSelectorHandler(psas, psas.podSelector, "")
+				podHandlerIdx, err = c.addPodSelectorHandler(psas.handlerResources, psas.podSelector, "")
 			}
 		} else {
 			// selected namespaces, use namespace handler
-			err = bnc.addNamespacedPodSelectorHandler(psas)
+			nsHandlerIdx, err = c.addNamespaceSelectorHandler(psas.handlerResources, psas.namespaceSelector)
 		}
-	}
-	if err == nil {
+		if err != nil {
+			return err
+		}
+		if podHandlerIdx != selector_based_handler.NoHandler {
+			psas.podHandlerIdx = podHandlerIdx
+		}
+		if nsHandlerIdx != selector_based_handler.NoHandler {
+			psas.nsHandlerIdx = nsHandlerIdx
+		}
 		klog.Infof("Created shared address set for pod selector %s", psas.key)
 	}
-	return err
+
+	return nil
 }
 
-func (psas *PodSelectorAddressSet) destroy(bnc *BaseNetworkController) error {
+func (psas *PodSelectorAddressSet) destroy(c *PodAddressSetController) error {
 	klog.Infof("Deleting shared address set for pod selector %s", psas.key)
 	psas.needsCleanup = true
+	// stop the handler first
+	if psas.podHandlerIdx != selector_based_handler.NoHandler {
+		c.podSelectorHandler.DeleteHandler(psas.podHandlerIdx)
+		psas.podHandlerIdx = selector_based_handler.NoHandler
+	}
+	if psas.nsHandlerIdx != selector_based_handler.NoHandler {
+		c.namespaceSelectorHandler.DeleteHandler(psas.nsHandlerIdx)
+		psas.nsHandlerIdx = selector_based_handler.NoHandler
+	}
 	if psas.handlerResources != nil {
-		err := psas.handlerResources.destroy(bnc)
+		err := psas.handlerResources.destroy(c)
 		if err != nil {
 			return fmt.Errorf("failed to delete handler resources: %w", err)
 		}
-	}
-	if psas.handler != nil {
-		bnc.watchFactory.RemovePodHandler(psas.handler)
-		psas.handler = nil
 	}
 	psas.needsCleanup = false
 	return nil
@@ -226,69 +267,40 @@ func (psas *PodSelectorAddressSet) destroy(bnc *BaseNetworkController) error {
 
 // namespace = "" means all namespaces
 // podSelector = nil means all pods
-func (bnc *BaseNetworkController) addPodSelectorHandler(psAddrSet *PodSelectorAddressSet, podSelector labels.Selector, namespace string) error {
-	podHandlerResources := psAddrSet.handlerResources
-	syncFunc := func(objs []interface{}) error {
-		// ignore returned error, since any pod that wasn't properly handled will be retried individually.
-		_ = bnc.handlePodAddUpdate(podHandlerResources, objs...)
-		return nil
-	}
-	retryFramework := bnc.newNetpolRetryFramework(
-		factory.AddressSetPodSelectorType,
-		syncFunc,
-		podHandlerResources)
+func (c *PodAddressSetController) addPodSelectorHandler(handlerInfo *PodSelectorAddrSetHandlerInfo, podSelector labels.Selector, namespace string) (int, error) {
+	podHandler := newPodHandler(handlerInfo, c)
 
-	podHandler, err := retryFramework.WatchResourceFiltered(namespace, podSelector)
+	idx, err := c.podSelectorHandler.AddHandler(namespace, podSelector, podHandler)
 	if err != nil {
-		klog.Errorf("Failed WatchResource for addPodSelectorHandler: %v", err)
-		return err
+		return selector_based_handler.NoHandler, fmt.Errorf("failed adding pod Selector handler: %w", err)
 	}
-	psAddrSet.handler = podHandler
-	return nil
+	return idx, nil
 }
 
-// addNamespacedPodSelectorHandler starts a watcher for AddressSetNamespaceAndPodSelectorType.
+// addNamespaceSelectorHandler starts a watcher for NamespaceSelectorType.
 // Add event for every existing namespace will be executed sequentially first, and an error will be
 // returned if something fails.
-func (bnc *BaseNetworkController) addNamespacedPodSelectorHandler(psAddrSet *PodSelectorAddressSet) error {
+func (c *PodAddressSetController) addNamespaceSelectorHandler(handlerInfo *PodSelectorAddrSetHandlerInfo, namespaceSelector labels.Selector) (int, error) {
 	// start watching namespaces selected by the namespace selector nsSel;
 	// upon namespace add event, start watching pods in that namespace selected
 	// by the label selector podSel
-	retryFramework := bnc.newNetpolRetryFramework(
-		factory.AddressSetNamespaceAndPodSelectorType,
-		nil,
-		psAddrSet.handlerResources,
-	)
-	namespaceHandler, err := retryFramework.WatchResourceFiltered("", psAddrSet.namespaceSelector)
-	if err != nil {
-		klog.Errorf("Failed WatchResource for addNamespacedPodSelectorHandler: %v", err)
-		return err
-	}
+	nsHandler := newNamespaceHandler(handlerInfo, c)
 
-	psAddrSet.handler = namespaceHandler
-	return nil
+	idx, err := c.namespaceSelectorHandler.AddHandler("", namespaceSelector, nsHandler)
+	if err != nil {
+		return selector_based_handler.NoHandler, fmt.Errorf("failed adding namespace Selector handler: %w", err)
+	}
+	return idx, nil
 }
 
 type PodSelectorAddrSetHandlerInfo struct {
-	// PodSelectorAddrSetHandlerInfo is updated by PodSelectorAddressSet's handler, and it may be deleted by
-	// PodSelectorAddressSet.
-	// To make sure pod handlers won't try to update deleted resources, this lock is used together with deleted field.
-	sync.RWMutex
-	// this is a signal for local event handlers that they are/should be stopped.
-	// it will be set to true before any PodSelectorAddrSetHandlerInfo infrastructure is deleted,
-	// therefore every handler can either do its work and be sure all required resources are there,
-	// or this value will be set to true and handler can't proceed.
-	// Use PodSelectorAddrSetHandlerInfo.RLock to read this field and hold it for the whole event handling.
-	// PodSelectorAddrSetHandlerInfo.destroy
-	deleted bool
-
 	// resources updated by podHandler
 	addressSet addressset.AddressSet
 	// namespaced pod handlers, the only type of handler that can be dynamically deleted without deleting the whole
 	// PodSelectorAddressSet. When namespace is deleted, podHandler for that namespace should be deleted too.
 	// Can be used by multiple namespace handlers in parallel for different keys
-	// namespace(string): *factory.Handler
-	namespacedPodHandlers sync.Map
+	// namespace(string): handlerIdx
+	namespacedPodHandlerIdxs sync.Map
 
 	// read-only fields
 	// unique key that identifies given PodSelectorAddressSet
@@ -298,22 +310,17 @@ type PodSelectorAddrSetHandlerInfo struct {
 	// namespace is used when namespaceSelector is nil to set static namespace
 	namespace string
 
-	netInfo  util.NetInfo
-	ipv4Mode bool
-	ipv6Mode bool
+	netInfo util.NetInfo
 }
 
 // idempotent
-func (handlerInfo *PodSelectorAddrSetHandlerInfo) destroy(bnc *BaseNetworkController) error {
-	handlerInfo.Lock()
-	defer handlerInfo.Unlock()
-	// signal to local pod handlers to ignore new events
-	handlerInfo.deleted = true
-	handlerInfo.namespacedPodHandlers.Range(func(_, value interface{}) bool {
-		bnc.watchFactory.RemovePodHandler(value.(*factory.Handler))
+func (handlerInfo *PodSelectorAddrSetHandlerInfo) destroy(c *PodAddressSetController) error {
+	// stop the handlers first, then delete resources they may need
+	handlerInfo.namespacedPodHandlerIdxs.Range(func(_, value interface{}) bool {
+		c.podSelectorHandler.DeleteHandler(value.(int))
 		return true
 	})
-	handlerInfo.namespacedPodHandlers = sync.Map{}
+	handlerInfo.namespacedPodHandlerIdxs = sync.Map{}
 	if handlerInfo.addressSet != nil {
 		err := handlerInfo.addressSet.Destroy()
 		if err != nil {
@@ -325,11 +332,6 @@ func (handlerInfo *PodSelectorAddrSetHandlerInfo) destroy(bnc *BaseNetworkContro
 }
 
 func (handlerInfo *PodSelectorAddrSetHandlerInfo) GetASHashNames() (string, string, error) {
-	handlerInfo.RLock()
-	defer handlerInfo.RUnlock()
-	if handlerInfo.deleted {
-		return "", "", fmt.Errorf("addresss set is deleted")
-	}
 	v4Hash, v6Hash := handlerInfo.addressSet.GetASHashNames()
 	return v4Hash, v6Hash, nil
 }
@@ -342,11 +344,7 @@ func (handlerInfo *PodSelectorAddrSetHandlerInfo) addPods(pods ...*v1.Pod) error
 		return fmt.Errorf("pod selector AddressSet %s is nil, cannot add pod(s)", handlerInfo.key)
 	}
 
-	podIPFactor := 1
-	if handlerInfo.ipv4Mode && handlerInfo.ipv6Mode {
-		podIPFactor = 2
-	}
-	ips := make([]net.IP, 0, len(pods)*podIPFactor)
+	ips := []net.IP{}
 	for _, pod := range pods {
 		podIPs, err := util.GetPodIPsOfNetwork(pod, handlerInfo.netInfo)
 		if err != nil {
@@ -357,7 +355,6 @@ func (handlerInfo *PodSelectorAddrSetHandlerInfo) addPods(pods ...*v1.Pod) error
 	return handlerInfo.addressSet.AddIPs(ips)
 }
 
-// must be called with PodSelectorAddrSetHandlerInfo read lock
 func (handlerInfo *PodSelectorAddrSetHandlerInfo) deletePod(pod *v1.Pod) error {
 	ips, err := util.GetPodIPsOfNetwork(pod, handlerInfo.netInfo)
 	if err != nil {
@@ -371,18 +368,13 @@ func (handlerInfo *PodSelectorAddrSetHandlerInfo) deletePod(pod *v1.Pod) error {
 
 // handlePodAddUpdate adds the IP address of a pod that has been
 // selected by PodSelectorAddressSet.
-func (bnc *BaseNetworkController) handlePodAddUpdate(podHandlerInfo *PodSelectorAddrSetHandlerInfo, objs ...interface{}) error {
+func handlePodAddUpdate(podHandlerInfo *PodSelectorAddrSetHandlerInfo, objs ...interface{}) error {
 	if config.Metrics.EnableScaleMetrics {
 		start := time.Now()
 		defer func() {
 			duration := time.Since(start)
 			metrics.RecordPodSelectorAddrSetPodEvent("add", duration)
 		}()
-	}
-	podHandlerInfo.RLock()
-	defer podHandlerInfo.RUnlock()
-	if podHandlerInfo.deleted {
-		return nil
 	}
 	pods := make([]*kapi.Pod, 0, len(objs))
 	for _, obj := range objs {
@@ -394,12 +386,13 @@ func (bnc *BaseNetworkController) handlePodAddUpdate(podHandlerInfo *PodSelector
 		pods = append(pods, pod)
 	}
 	// podHandlerInfo.addPods must be called with PodSelectorAddressSet RLock.
-	return podHandlerInfo.addPods(pods...)
+	err := podHandlerInfo.addPods(pods...)
+	return err
 }
 
 // handlePodDelete removes the IP address of a pod that no longer
 // matches a selector
-func (bnc *BaseNetworkController) handlePodDelete(podHandlerInfo *PodSelectorAddrSetHandlerInfo, obj interface{}) error {
+func (c *PodAddressSetController) handlePodDelete(podHandlerInfo *PodSelectorAddrSetHandlerInfo, obj interface{}) error {
 	if config.Metrics.EnableScaleMetrics {
 		start := time.Now()
 		defer func() {
@@ -407,17 +400,13 @@ func (bnc *BaseNetworkController) handlePodDelete(podHandlerInfo *PodSelectorAdd
 			metrics.RecordPodSelectorAddrSetPodEvent("delete", duration)
 		}()
 	}
-	podHandlerInfo.RLock()
-	defer podHandlerInfo.RUnlock()
-	if podHandlerInfo.deleted {
-		return nil
-	}
+
 	pod := obj.(*kapi.Pod)
 	if pod.Spec.NodeName == "" {
 		klog.Infof("Pod %s/%s not scheduled on any node, skipping it", pod.Namespace, pod.Name)
 		return nil
 	}
-	collidingPodName, err := bnc.podSelectorPodNeedsDelete(pod, podHandlerInfo)
+	collidingPodName, err := c.podSelectorPodNeedsDelete(pod, podHandlerInfo)
 	if err != nil {
 		return fmt.Errorf("failed to check if ip is reused for pod %s/%s: %w", pod.Namespace, pod.Name, err)
 	}
@@ -441,16 +430,16 @@ func (bnc *BaseNetworkController) handlePodDelete(podHandlerInfo *PodSelectorAdd
 // of completed pod, then that ip should stay in the address set in case new pod is selected by the PodSelectorAddressSet.
 // returns collidingPod namespace+name if the ip shouldn't be removed, because it is reused.
 // Must be called with PodSelectorAddressSet.RLock.
-func (bnc *BaseNetworkController) podSelectorPodNeedsDelete(pod *kapi.Pod, podHandlerInfo *PodSelectorAddrSetHandlerInfo) (string, error) {
+func (c *PodAddressSetController) podSelectorPodNeedsDelete(pod *kapi.Pod, podHandlerInfo *PodSelectorAddrSetHandlerInfo) (string, error) {
 	if !util.PodCompleted(pod) {
 		return "", nil
 	}
-	ips, err := util.GetPodIPsOfNetwork(pod, bnc.NetInfo)
+	ips, err := util.GetPodIPsOfNetwork(pod, c.netInfo)
 	if err != nil {
 		return "", fmt.Errorf("can't get pod IPs %s/%s: %w", pod.Namespace, pod.Name, err)
 	}
 	// completed pod be deleted a long time ago, check if there is a new pod with that same ip
-	collidingPod, err := bnc.findPodWithIPAddresses(ips)
+	collidingPod, err := findPodWithIPAddresses(ips, c.watchFactory, c.netInfo)
 	if err != nil {
 		return "", fmt.Errorf("lookup for pods with the same IPs [%s] failed: %w", util.JoinIPs(ips, " "), err)
 	}
@@ -490,7 +479,7 @@ func (bnc *BaseNetworkController) podSelectorPodNeedsDelete(pod *kapi.Pod, podHa
 			return collidingPodName, nil
 		} else {
 			// get namespace to match labels
-			ns, err := bnc.watchFactory.GetNamespace(collidingPod.Namespace)
+			ns, err := c.watchFactory.GetNamespace(collidingPod.Namespace)
 			if err != nil {
 				return "", fmt.Errorf("failed to get namespace %s for pod with the same ip: %w", collidingPod.Namespace, err)
 			}
@@ -505,7 +494,7 @@ func (bnc *BaseNetworkController) podSelectorPodNeedsDelete(pod *kapi.Pod, podHa
 	return "", nil
 }
 
-func (bnc *BaseNetworkController) handleNamespaceAddUpdate(podHandlerInfo *PodSelectorAddrSetHandlerInfo, obj interface{}) error {
+func (c *PodAddressSetController) handleNamespaceAdd(handlerInfo *PodSelectorAddrSetHandlerInfo, obj interface{}) error {
 	if config.Metrics.EnableScaleMetrics {
 		start := time.Now()
 		defer func() {
@@ -514,50 +503,16 @@ func (bnc *BaseNetworkController) handleNamespaceAddUpdate(podHandlerInfo *PodSe
 		}()
 	}
 	namespace := obj.(*kapi.Namespace)
-	podHandlerInfo.RLock()
-	locked := true
-	defer func() {
-		if locked {
-			podHandlerInfo.RUnlock()
-		}
-	}()
-	if podHandlerInfo.deleted {
-		return nil
-	}
-
 	// start watching pods in this namespace and selected by the label selector in extraParameters.podSelector
-	syncFunc := func(objs []interface{}) error {
-		// ignore returned error, since any pod that wasn't properly handled will be retried individually.
-		_ = bnc.handlePodAddUpdate(podHandlerInfo, objs...)
-		return nil
-	}
-	retryFramework := bnc.newNetpolRetryFramework(
-		factory.AddressSetPodSelectorType,
-		syncFunc,
-		podHandlerInfo,
-	)
-	// syncFunc and factory.AddressSetPodSelectorType add event handler also take np.RLock,
-	// and will be called form the same thread. The same thread shouldn't take the same rlock twice.
-	// unlock
-	podHandlerInfo.RUnlock()
-	locked = false
-	podHandler, err := retryFramework.WatchResourceFiltered(namespace.Name, podHandlerInfo.podSelector)
+	idx, err := c.addPodSelectorHandler(handlerInfo, handlerInfo.podSelector, namespace.Name)
 	if err != nil {
-		klog.Errorf("Failed WatchResource for AddressSetNamespaceAndPodSelectorType: %v", err)
 		return err
 	}
-	// lock PodSelectorAddressSet again to update namespacedPodHandlers
-	podHandlerInfo.RLock()
-	locked = true
-	if podHandlerInfo.deleted {
-		bnc.watchFactory.RemovePodHandler(podHandler)
-		return nil
-	}
-	podHandlerInfo.namespacedPodHandlers.Store(namespace.Name, podHandler)
+	handlerInfo.namespacedPodHandlerIdxs.Store(namespace.Name, idx)
 	return nil
 }
 
-func (bnc *BaseNetworkController) handleNamespaceDel(podHandlerInfo *PodSelectorAddrSetHandlerInfo, obj interface{}) error {
+func (c *PodAddressSetController) handleNamespaceDel(podHandlerInfo *PodSelectorAddrSetHandlerInfo, obj interface{}) error {
 	if config.Metrics.EnableScaleMetrics {
 		start := time.Now()
 		defer func() {
@@ -565,35 +520,95 @@ func (bnc *BaseNetworkController) handleNamespaceDel(podHandlerInfo *PodSelector
 			metrics.RecordPodSelectorAddrSetNamespaceEvent("delete", duration)
 		}()
 	}
-	podHandlerInfo.RLock()
-	defer podHandlerInfo.RUnlock()
-	if podHandlerInfo.deleted {
-		return nil
-	}
-
 	// when the namespace labels no longer apply
 	// stop pod handler,
 	// remove the namespaces pods from the address_set
 	var errs []error
 	namespace := obj.(*kapi.Namespace)
 
-	if handler, ok := podHandlerInfo.namespacedPodHandlers.Load(namespace.Name); ok {
-		bnc.watchFactory.RemovePodHandler(handler.(*factory.Handler))
-		podHandlerInfo.namespacedPodHandlers.Delete(namespace.Name)
+	if handlerIdx, ok := podHandlerInfo.namespacedPodHandlerIdxs.Load(namespace.Name); ok {
+		c.podSelectorHandler.DeleteHandler(handlerIdx.(int))
+		podHandlerInfo.namespacedPodHandlerIdxs.Delete(namespace.Name)
 	}
 
-	pods, err := bnc.watchFactory.GetPods(namespace.Name)
+	pods, err := c.watchFactory.GetPods(namespace.Name)
 	if err != nil {
 		return fmt.Errorf("failed to get namespace %s pods: %v", namespace.Namespace, err)
 	}
 	for _, pod := range pods {
 		// call functions from oc.handlePodDelete
-		// PodSelectorAddressSet.deletePod must be called with PodSelectorAddressSet RLock.
 		if err = podHandlerInfo.deletePod(pod); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return kerrorsutil.NewAggregate(errs)
+}
+
+type podHandler struct {
+	controller  *PodAddressSetController
+	handlerInfo *PodSelectorAddrSetHandlerInfo
+}
+
+func newPodHandler(handlerInfo *PodSelectorAddrSetHandlerInfo,
+	controller *PodAddressSetController) *podHandler {
+	return &podHandler{
+		controller:  controller,
+		handlerInfo: handlerInfo,
+	}
+}
+
+func (handlerInfo *podHandler) ProcessExisting(objs []interface{}) error {
+	// ignore returned error, since any pod that wasn't properly handled will be retried individually.
+	_ = handlePodAddUpdate(handlerInfo.handlerInfo, objs...)
+	return nil
+}
+
+func (handlerInfo *podHandler) OnAdd(obj interface{}) error {
+	return handlePodAddUpdate(handlerInfo.handlerInfo, obj)
+}
+
+func (handlerInfo *podHandler) OnUpdate(oldObj, newObj interface{}) error {
+	return handlePodAddUpdate(handlerInfo.handlerInfo, newObj)
+}
+
+func (handlerInfo *podHandler) OnDelete(obj interface{}) error {
+	return handlerInfo.controller.handlePodDelete(handlerInfo.handlerInfo, obj)
+}
+
+type namespaceHandler struct {
+	controller  *PodAddressSetController
+	handlerInfo *PodSelectorAddrSetHandlerInfo
+}
+
+func newNamespaceHandler(handlerInfo *PodSelectorAddrSetHandlerInfo,
+	controller *PodAddressSetController) *namespaceHandler {
+	return &namespaceHandler{
+		controller:  controller,
+		handlerInfo: handlerInfo,
+	}
+}
+
+func (handlerInfo *namespaceHandler) ProcessExisting(objs []interface{}) error {
+	for _, obj := range objs {
+		err := handlerInfo.controller.handleNamespaceAdd(handlerInfo.handlerInfo, obj)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (handlerInfo *namespaceHandler) OnAdd(obj interface{}) error {
+	return handlerInfo.controller.handleNamespaceAdd(handlerInfo.handlerInfo, obj)
+}
+
+func (handlerInfo *namespaceHandler) OnUpdate(oldObj, newObj interface{}) error {
+	// no update
+	return nil
+}
+
+func (handlerInfo *namespaceHandler) OnDelete(obj interface{}) error {
+	return handlerInfo.controller.handleNamespaceDel(handlerInfo.handlerInfo, obj)
 }
 
 func getPodSelectorAddrSetDbIDs(psasKey, controller string) *libovsdbops.DbObjectIDs {

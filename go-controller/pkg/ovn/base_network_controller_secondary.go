@@ -530,6 +530,10 @@ func (bsnc *BaseSecondaryNetworkController) WatchMultiNetworkPolicy() error {
 	if bsnc.policyHandler != nil {
 		return nil
 	}
+	err := bsnc.StartSelectorBasedHandlers()
+	if err != nil {
+		return err
+	}
 	handler, err := bsnc.retryNetworkPolicies.WatchResource()
 	if err != nil {
 		bsnc.policyHandler = handler

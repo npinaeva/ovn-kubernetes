@@ -8,6 +8,7 @@ import (
 
 	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/ipallocator"
 	logicalswitchmanager "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -284,7 +285,11 @@ func (bnc *BaseNetworkController) deletePodLogicalPort(pod *kapi.Pod, portInfo *
 }
 
 func (bnc *BaseNetworkController) findPodWithIPAddresses(needleIPs []net.IP) (*kapi.Pod, error) {
-	allPods, err := bnc.watchFactory.GetAllPods()
+	return findPodWithIPAddresses(needleIPs, bnc.watchFactory, bnc.NetInfo)
+}
+
+func findPodWithIPAddresses(needleIPs []net.IP, watchFactory *factory.WatchFactory, netInfo util.NetInfo) (*kapi.Pod, error) {
+	allPods, err := watchFactory.GetAllPods()
 	if err != nil {
 		return nil, fmt.Errorf("unable to get pods: %w", err)
 	}
@@ -295,7 +300,7 @@ func (bnc *BaseNetworkController) findPodWithIPAddresses(needleIPs []net.IP) (*k
 			continue
 		}
 		// check if the pod addresses match in the OVN annotation
-		haystackPodAddrs, err := util.GetPodIPsOfNetwork(p, bnc.NetInfo)
+		haystackPodAddrs, err := util.GetPodIPsOfNetwork(p, netInfo)
 		if err != nil {
 			continue
 		}

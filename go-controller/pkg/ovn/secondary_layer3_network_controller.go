@@ -296,6 +296,7 @@ func (oc *SecondaryLayer3NetworkController) initRetryFramework() {
 	if util.IsMultiNetworkPoliciesSupportEnabled() {
 		oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
 		oc.retryNetworkPolicies = oc.newRetryFramework(factory.MultiNetworkPolicyType)
+		oc.initSelectorBasedHandlers()
 	}
 }
 
@@ -340,6 +341,7 @@ func (oc *SecondaryLayer3NetworkController) Stop() {
 	oc.wg.Wait()
 
 	if oc.policyHandler != nil {
+		oc.StopSelectorBasedHandlers()
 		oc.watchFactory.RemoveMultiNetworkPolicyHandler(oc.policyHandler)
 	}
 	if oc.podHandler != nil {
