@@ -101,10 +101,10 @@ const (
 )
 
 // types for dynamic handlers created when adding a network policy
-type addressSetNamespaceAndPodSelector struct{}
 type peerNamespaceSelector struct{}
-type addressSetPodSelector struct{}
 type localPodSelector struct{}
+type podSelector struct{}
+type namespaceSelector struct{}
 
 // types for handlers related to egress IP
 type egressIPPod struct{}
@@ -123,27 +123,29 @@ type serviceForFakeNodePortWatcher struct{} // only for unit tests
 
 var (
 	// Resource types used in ovnk master
-	PodType                               reflect.Type = reflect.TypeOf(&kapi.Pod{})
-	ServiceType                           reflect.Type = reflect.TypeOf(&kapi.Service{})
-	EndpointSliceType                     reflect.Type = reflect.TypeOf(&discovery.EndpointSlice{})
-	PolicyType                            reflect.Type = reflect.TypeOf(&knet.NetworkPolicy{})
-	NamespaceType                         reflect.Type = reflect.TypeOf(&kapi.Namespace{})
-	NodeType                              reflect.Type = reflect.TypeOf(&kapi.Node{})
-	EgressFirewallType                    reflect.Type = reflect.TypeOf(&egressfirewallapi.EgressFirewall{})
-	EgressIPType                          reflect.Type = reflect.TypeOf(&egressipapi.EgressIP{})
-	EgressIPNamespaceType                 reflect.Type = reflect.TypeOf(&egressIPNamespace{})
-	EgressIPPodType                       reflect.Type = reflect.TypeOf(&egressIPPod{})
-	EgressNodeType                        reflect.Type = reflect.TypeOf(&egressNode{})
-	EgressFwNodeType                      reflect.Type = reflect.TypeOf(&egressFwNode{})
-	CloudPrivateIPConfigType              reflect.Type = reflect.TypeOf(&ocpcloudnetworkapi.CloudPrivateIPConfig{})
-	EgressQoSType                         reflect.Type = reflect.TypeOf(&egressqosapi.EgressQoS{})
-	EgressServiceType                     reflect.Type = reflect.TypeOf(&egressserviceapi.EgressService{})
-	AddressSetNamespaceAndPodSelectorType reflect.Type = reflect.TypeOf(&addressSetNamespaceAndPodSelector{})
-	PeerNamespaceSelectorType             reflect.Type = reflect.TypeOf(&peerNamespaceSelector{})
-	AddressSetPodSelectorType             reflect.Type = reflect.TypeOf(&addressSetPodSelector{})
-	LocalPodSelectorType                  reflect.Type = reflect.TypeOf(&localPodSelector{})
-	NetworkAttachmentDefinitionType       reflect.Type = reflect.TypeOf(&nadapi.NetworkAttachmentDefinition{})
-	MultiNetworkPolicyType                reflect.Type = reflect.TypeOf(&mnpapi.MultiNetworkPolicy{})
+	PodType                         reflect.Type = reflect.TypeOf(&kapi.Pod{})
+	ServiceType                     reflect.Type = reflect.TypeOf(&kapi.Service{})
+	EndpointSliceType               reflect.Type = reflect.TypeOf(&discovery.EndpointSlice{})
+	PolicyType                      reflect.Type = reflect.TypeOf(&knet.NetworkPolicy{})
+	NamespaceType                   reflect.Type = reflect.TypeOf(&kapi.Namespace{})
+	NodeType                        reflect.Type = reflect.TypeOf(&kapi.Node{})
+	EgressFirewallType              reflect.Type = reflect.TypeOf(&egressfirewallapi.EgressFirewall{})
+	EgressIPType                    reflect.Type = reflect.TypeOf(&egressipapi.EgressIP{})
+	EgressIPNamespaceType           reflect.Type = reflect.TypeOf(&egressIPNamespace{})
+	EgressIPPodType                 reflect.Type = reflect.TypeOf(&egressIPPod{})
+	EgressNodeType                  reflect.Type = reflect.TypeOf(&egressNode{})
+	EgressFwNodeType                reflect.Type = reflect.TypeOf(&egressFwNode{})
+	CloudPrivateIPConfigType        reflect.Type = reflect.TypeOf(&ocpcloudnetworkapi.CloudPrivateIPConfig{})
+	EgressQoSType                   reflect.Type = reflect.TypeOf(&egressqosapi.EgressQoS{})
+	EgressServiceType               reflect.Type = reflect.TypeOf(&egressserviceapi.EgressService{})
+	PeerNamespaceSelectorType       reflect.Type = reflect.TypeOf(&peerNamespaceSelector{})
+	LocalPodSelectorType            reflect.Type = reflect.TypeOf(&localPodSelector{})
+	NetworkAttachmentDefinitionType reflect.Type = reflect.TypeOf(&nadapi.NetworkAttachmentDefinition{})
+	MultiNetworkPolicyType          reflect.Type = reflect.TypeOf(&mnpapi.MultiNetworkPolicy{})
+
+	// selector-based handlers
+	PodSelectorType       reflect.Type = reflect.TypeOf(&podSelector{})
+	NamespaceSelectorType reflect.Type = reflect.TypeOf(&namespaceSelector{})
 
 	// Resource types used in ovnk node
 	NamespaceExGwType                         reflect.Type = reflect.TypeOf(&namespaceExGw{})
@@ -547,7 +549,7 @@ func (wf *WatchFactory) GetHandlerPriority(objType reflect.Type) (priority int) 
 	switch objType {
 	case EgressIPPodType:
 		return 1
-	case AddressSetPodSelectorType:
+	case PodSelectorType:
 		return 2
 	case LocalPodSelectorType:
 		return 3
@@ -555,7 +557,7 @@ func (wf *WatchFactory) GetHandlerPriority(objType reflect.Type) (priority int) 
 		return 1
 	case PeerNamespaceSelectorType:
 		return 2
-	case AddressSetNamespaceAndPodSelectorType:
+	case NamespaceSelectorType:
 		return 3
 	case EgressNodeType:
 		return 1
@@ -599,13 +601,13 @@ func (wf *WatchFactory) GetResourceHandlerFunc(objType reflect.Type) (AddHandler
 			return wf.AddFilteredServiceHandler(namespace, funcs, processExisting)
 		}, nil
 
-	case AddressSetPodSelectorType, LocalPodSelectorType, PodType, EgressIPPodType:
+	case LocalPodSelectorType, PodType, EgressIPPodType, PodSelectorType:
 		return func(namespace string, sel labels.Selector,
 			funcs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error) {
 			return wf.AddFilteredPodHandler(namespace, sel, funcs, processExisting, priority)
 		}, nil
 
-	case AddressSetNamespaceAndPodSelectorType, PeerNamespaceSelectorType, EgressIPNamespaceType:
+	case PeerNamespaceSelectorType, EgressIPNamespaceType, NamespaceSelectorType:
 		return func(namespace string, sel labels.Selector,
 			funcs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error) {
 			return wf.AddFilteredNamespaceHandler(namespace, sel, funcs, processExisting, priority)
@@ -697,6 +699,15 @@ func (wf *WatchFactory) addHandler(objType reflect.Type, namespace string, sel l
 
 func (wf *WatchFactory) removeHandler(objType reflect.Type, handler *Handler) {
 	wf.informers[objType].removeHandler(handler)
+}
+
+func (wf *WatchFactory) RemoveHandler(objType reflect.Type, handler *Handler) {
+	switch objType {
+	case PodType, PodSelectorType:
+		wf.RemovePodHandler(handler)
+	case NamespaceType, NamespaceSelectorType:
+		wf.RemoveNamespaceHandler(handler)
+	}
 }
 
 // AddPodHandler adds a handler function that will be executed on Pod object changes

@@ -494,7 +494,7 @@ var _ = Describe("Watch Factory Operations", func() {
 		It("is called for each existing policy: AddressSetPodSelectorType", func() {
 			policies = append(policies, newPolicy("denyall", "default"))
 			pods = append(pods, newPod("pod1", "default"))
-			testExistingFilteredHandler(PodType, AddressSetPodSelectorType, "default", nil, 2)
+			testExistingFilteredHandler(PodType, PodSelectorType, "default", nil, 2)
 		})
 
 		It("is called for each existing policy: LocalPodSelectorType", func() {
@@ -506,7 +506,7 @@ var _ = Describe("Watch Factory Operations", func() {
 		It("is called for each existing policy: AddressSetNamespaceAndPodSelectorType", func() {
 			policies = append(policies, newPolicy("denyall", "default"))
 			pods = append(pods, newPod("pod1", "default"))
-			testExistingFilteredHandler(NamespaceType, AddressSetNamespaceAndPodSelectorType, "default", nil, 3)
+			testExistingFilteredHandler(NamespaceType, NamespaceSelectorType, "default", nil, 3)
 		})
 
 		It("is called for each existing policy: PeerNamespaceSelectorType", func() {
@@ -1375,7 +1375,7 @@ var _ = Describe("Watch Factory Operations", func() {
 				Expect(newNamespace.Status.Phase).To(Equal(v1.NamespaceTerminating))
 			},
 		})
-		peerpodnsh, c4 := addPriorityHandler(wf, NamespaceType, AddressSetNamespaceAndPodSelectorType, cache.ResourceEventHandlerFuncs{
+		peerpodnsh, c4 := addPriorityHandler(wf, NamespaceType, NamespaceSelectorType, cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				defer GinkgoRecover()
 				namespace := obj.(*v1.Namespace)

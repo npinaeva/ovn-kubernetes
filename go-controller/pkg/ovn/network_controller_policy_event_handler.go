@@ -51,40 +51,12 @@ func (bnc *BaseNetworkController) newNetpolRetryFramework(
 
 // event handlers handles policy related events
 type networkControllerPolicyEventHandler struct {
+	retry.EmptyEventHandler
 	watchFactory    *factory.WatchFactory
 	objType         reflect.Type
 	bnc             *BaseNetworkController
 	extraParameters interface{}
 	syncFunc        func([]interface{}) error
-}
-
-// AreResourcesEqual returns true if, given two objects of a known resource type, the update logic for this resource
-// type considers them equal and therefore no update is needed. It returns false when the two objects are not considered
-// equal and an update needs be executed. This is regardless of how the update is carried out (whether with a dedicated update
-// function or with a delete on the old obj followed by an add on the new obj).
-func (h *networkControllerPolicyEventHandler) AreResourcesEqual(obj1, obj2 interface{}) (bool, error) {
-	// switch based on type
-	switch h.objType {
-	case factory.AddressSetPodSelectorType, //
-		factory.LocalPodSelectorType: //
-		// For these types, there was no old vs new obj comparison in the original update code,
-		// so pretend they're always different so that the update code gets executed
-		return false, nil
-
-	case factory.PeerNamespaceSelectorType, //
-		factory.AddressSetNamespaceAndPodSelectorType: //
-		// For these types there is no update code, so pretend old and new
-		// objs are always equivalent and stop processing the update event.
-		return true, nil
-	}
-
-	return false, fmt.Errorf("no object comparison for type %s", h.objType)
-}
-
-// GetInternalCacheEntry returns the internal cache entry for this object, given an object and its type.
-// This is now used only for pods, which will get their the logical port cache entry.
-func (h *networkControllerPolicyEventHandler) GetInternalCacheEntry(obj interface{}) interface{} {
-	return nil
 }
 
 // GetResourceFromInformerCache returns the latest state of the object, given an object key and its type.
@@ -100,12 +72,10 @@ func (h *networkControllerPolicyEventHandler) GetResourceFromInformerCache(key s
 	}
 
 	switch h.objType {
-	case factory.AddressSetPodSelectorType,
-		factory.LocalPodSelectorType:
+	case factory.LocalPodSelectorType:
 		obj, err = h.watchFactory.GetPod(namespace, name)
 
-	case factory.AddressSetNamespaceAndPodSelectorType,
-		factory.PeerNamespaceSelectorType:
+	case factory.PeerNamespaceSelectorType:
 		obj, err = h.watchFactory.GetNamespace(name)
 
 	default:
@@ -115,46 +85,11 @@ func (h *networkControllerPolicyEventHandler) GetResourceFromInformerCache(key s
 	return obj, err
 }
 
-// RecordAddEvent records the add event on this given object.
-func (h *networkControllerPolicyEventHandler) RecordAddEvent(obj interface{}) {
-}
-
-// RecordUpdateEvent records the update event on this given object.
-func (h *networkControllerPolicyEventHandler) RecordUpdateEvent(obj interface{}) {
-}
-
-// RecordDeleteEvent records the delete event on this given object.
-func (h *networkControllerPolicyEventHandler) RecordDeleteEvent(obj interface{}) {
-}
-
-// RecordSuccessEvent records the success event on this given object.
-func (h *networkControllerPolicyEventHandler) RecordSuccessEvent(obj interface{}) {
-}
-
-// RecordErrorEvent records an error event on the given object.
-// Only used for pods now.
-func (h *networkControllerPolicyEventHandler) RecordErrorEvent(obj interface{}, reason string, err error) {
-}
-
-// IsResourceScheduled returns true if the given object has been scheduled.
-// Only applied to pods for now. Returns true for all other types.
-func (h *networkControllerPolicyEventHandler) IsResourceScheduled(obj interface{}) bool {
-	return true
-}
-
 // AddResource adds the specified object to the cluster according to its type and returns the error,
 // if any, yielded during object creation.
 // Given an object to add and a boolean specifying if the function was executed from iterateRetryResources
 func (h *networkControllerPolicyEventHandler) AddResource(obj interface{}, fromRetryLoop bool) error {
 	switch h.objType {
-	case factory.AddressSetPodSelectorType:
-		peerAS := h.extraParameters.(*PodSelectorAddrSetHandlerInfo)
-		return h.bnc.handlePodAddUpdate(peerAS, obj)
-
-	case factory.AddressSetNamespaceAndPodSelectorType:
-		peerAS := h.extraParameters.(*PodSelectorAddrSetHandlerInfo)
-		return h.bnc.handleNamespaceAddUpdate(peerAS, obj)
-
 	case factory.PeerNamespaceSelectorType:
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
 		return h.bnc.handlePeerNamespaceSelectorAdd(extraParameters.np, extraParameters.gp, obj)
@@ -176,10 +111,6 @@ func (h *networkControllerPolicyEventHandler) AddResource(obj interface{}, fromR
 // is in the retryCache or not.
 func (h *networkControllerPolicyEventHandler) UpdateResource(oldObj, newObj interface{}, inRetryCache bool) error {
 	switch h.objType {
-	case factory.AddressSetPodSelectorType:
-		peerAS := h.extraParameters.(*PodSelectorAddrSetHandlerInfo)
-		return h.bnc.handlePodAddUpdate(peerAS, newObj)
-
 	case factory.LocalPodSelectorType:
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
 		return h.bnc.handleLocalPodSelectorAddFunc(
@@ -194,14 +125,6 @@ func (h *networkControllerPolicyEventHandler) UpdateResource(oldObj, newObj inte
 // used for now for pods and network policies.
 func (h *networkControllerPolicyEventHandler) DeleteResource(obj, cachedObj interface{}) error {
 	switch h.objType {
-	case factory.AddressSetPodSelectorType:
-		peerAS := h.extraParameters.(*PodSelectorAddrSetHandlerInfo)
-		return h.bnc.handlePodDelete(peerAS, obj)
-
-	case factory.AddressSetNamespaceAndPodSelectorType:
-		peerAS := h.extraParameters.(*PodSelectorAddrSetHandlerInfo)
-		return h.bnc.handleNamespaceDel(peerAS, obj)
-
 	case factory.PeerNamespaceSelectorType:
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
 		return h.bnc.handlePeerNamespaceSelectorDel(extraParameters.np, extraParameters.gp, obj)
@@ -226,8 +149,6 @@ func (h *networkControllerPolicyEventHandler) SyncFunc(objs []interface{}) error
 	} else {
 		switch h.objType {
 		case factory.LocalPodSelectorType,
-			factory.AddressSetNamespaceAndPodSelectorType,
-			factory.AddressSetPodSelectorType,
 			factory.PeerNamespaceSelectorType:
 			syncFunc = nil
 
@@ -245,8 +166,7 @@ func (h *networkControllerPolicyEventHandler) SyncFunc(objs []interface{}) error
 // This is used now for pods that are either in a PodSucceeded or in a PodFailed state.
 func (h *networkControllerPolicyEventHandler) IsObjectInTerminalState(obj interface{}) bool {
 	switch h.objType {
-	case factory.AddressSetPodSelectorType,
-		factory.LocalPodSelectorType:
+	case factory.LocalPodSelectorType:
 		pod := obj.(*kapi.Pod)
 		return util.PodCompleted(pod)
 
