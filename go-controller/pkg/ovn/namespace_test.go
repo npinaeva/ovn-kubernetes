@@ -12,6 +12,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/selector_based_controllers"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/sbdb"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
@@ -114,7 +115,7 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 			ns2 := getNamespaceAddrSetDbIDs("namespace2", DefaultNetworkControllerName)
 			fakeOvn.asf.NewAddressSet(ns2, []net.IP{net.ParseIP("1.1.1.2")})
 			// netpol peer address set for existing netpol, should stay
-			netpol := getPodSelectorAddrSetDbIDs("pasName", DefaultNetworkControllerName)
+			netpol := selector_based_controllers.GetPodSelectorAddrSetDbIDs("pasName", DefaultNetworkControllerName)
 			fakeOvn.asf.NewAddressSet(netpol, []net.IP{net.ParseIP("1.1.1.3")})
 			// egressQoS-owned address set, should stay
 			qos := getEgressQosAddrSetDbIDs("namespace", "0", controllerName)

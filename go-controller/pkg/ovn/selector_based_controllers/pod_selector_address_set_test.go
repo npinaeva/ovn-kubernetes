@@ -1,35 +1,118 @@
-package ovn
+package selector_based_controllers
 
 import (
 	"context"
 	"fmt"
+	"net"
+	"strings"
+	"time"
+
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/ginkgo/extensions/table"
 	"github.com/onsi/gomega"
+
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
-	"net"
-	"time"
+	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 
 	v1 "k8s.io/api/core/v1"
 	knet "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
-func getPolicyKeyWithKind(policy *knet.NetworkPolicy) string {
-	return fmt.Sprintf("%v/%v/%v", "NetworkPolicy", policy.Namespace, policy.Name)
+func newNamespaceMeta(namespace string, additionalLabels map[string]string) metav1.ObjectMeta {
+	labels := map[string]string{
+		"name": namespace,
+	}
+	for k, v := range additionalLabels {
+		labels[k] = v
+	}
+	return metav1.ObjectMeta{
+		UID:         types.UID(namespace),
+		Name:        namespace,
+		Labels:      labels,
+		Annotations: map[string]string{},
+	}
+}
+
+func newNamespace(namespace string) *v1.Namespace {
+	return &v1.Namespace{
+		ObjectMeta: newNamespaceMeta(namespace, nil),
+		Spec:       v1.NamespaceSpec{},
+		Status:     v1.NamespaceStatus{},
+	}
+}
+
+func newPodMeta(namespace, name string, additionalLabels map[string]string) metav1.ObjectMeta {
+	labels := map[string]string{
+		"name": name,
+	}
+	for k, v := range additionalLabels {
+		labels[k] = v
+	}
+	return metav1.ObjectMeta{
+		Name:      name,
+		UID:       types.UID(name),
+		Namespace: namespace,
+		Labels:    labels,
+	}
+}
+
+func newPod(namespace, name, node, podIP string) *v1.Pod {
+	podIPs := []v1.PodIP{}
+	if podIP != "" {
+		podIPs = append(podIPs, v1.PodIP{IP: podIP})
+	}
+	return &v1.Pod{
+		ObjectMeta: newPodMeta(namespace, name, nil),
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Name:  "containerName",
+					Image: "containerImage",
+				},
+			},
+			NodeName: node,
+		},
+		Status: v1.PodStatus{
+			Phase:  v1.PodRunning,
+			PodIP:  podIP,
+			PodIPs: podIPs,
+		},
+	}
+}
+
+func getStaleNetpolAddrSetDbIDs(policyNamespace, policyName, policyType, idx, controller string) *libovsdbops.DbObjectIDs {
+	return libovsdbops.NewDbObjectIDs(libovsdbops.AddressSetNetworkPolicy, controller, map[libovsdbops.ExternalIDKey]string{
+		libovsdbops.ObjectNameKey: policyNamespace + "_" + policyName,
+		// direction and idx uniquely identify address set (= gress policy rule)
+		libovsdbops.PolicyDirectionKey: strings.ToLower(policyType),
+		libovsdbops.GressIdxKey:        idx,
+	})
+}
+
+func eventuallyExpectAddressSetsWithIP(fakeController *FakeController, peer knet.NetworkPolicyPeer, namespace, ip string) {
+	if peer.PodSelector != nil {
+		dbIDs := GetPodSelectorAddrSetDbIDs(GetPodSelectorKey(peer.PodSelector, peer.NamespaceSelector, namespace), fakeController.controllerName)
+		fakeController.asf.EventuallyExpectAddressSetWithIPs(dbIDs, []string{ip})
+	}
+}
+
+func eventuallyExpectEmptyAddressSetsExist(fakeController *FakeController, peer knet.NetworkPolicyPeer, namespace string) {
+	if peer.PodSelector != nil {
+		dbIDs := GetPodSelectorAddrSetDbIDs(GetPodSelectorKey(peer.PodSelector, peer.NamespaceSelector, namespace), fakeController.controllerName)
+		fakeController.asf.EventuallyExpectEmptyAddressSetExist(dbIDs)
+	}
 }
 
 var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 	const (
 		namespaceName1 = "namespace1"
 		namespaceName2 = "namespace2"
-		netPolicyName1 = "networkpolicy1"
-		netPolicyName2 = "networkpolicy2"
 		nodeName       = "node1"
 		podLabelKey    = "podLabel"
 		ip1            = "10.128.1.1"
@@ -38,70 +121,36 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 		ip4            = "10.128.1.4"
 	)
 	var (
-		fakeOvn   *FakeOVN
-		initialDB libovsdbtest.TestSetup
+		fakeController *FakeController
 	)
 
 	ginkgo.BeforeEach(func() {
 		// Restore global default values before each testcase
 		config.PrepareTestConfig()
-		fakeOvn = NewFakeOVN(true)
-		initialData := getHairpinningACLsV4AndPortGroup()
-		initialDB = libovsdbtest.TestSetup{
-			NBData: initialData,
-		}
+		fakeController = NewFakeController()
 	})
 
 	ginkgo.AfterEach(func() {
-		if fakeOvn.watcher != nil {
-			// fakeOVN was inited
-			fakeOvn.shutdown()
+		if fakeController.watcher != nil {
+			// fakeController was inited
+			fakeController.shutdown()
 		}
 	})
 
-	startOvn := func(dbSetup libovsdbtest.TestSetup, namespaces []v1.Namespace, networkPolicies []knet.NetworkPolicy,
-		pods []testPod, podLabels map[string]string) {
-		var podsList []v1.Pod
-		for _, testPod := range pods {
-			knetPod := newPod(testPod.namespace, testPod.podName, testPod.nodeName, testPod.podIP)
-			if len(podLabels) > 0 {
-				knetPod.Labels = podLabels
-			}
-			podsList = append(podsList, *knetPod)
-		}
-		fakeOvn.startWithDBSetup(dbSetup,
+	startController := func(namespaces []v1.Namespace) {
+		fakeController.start(
 			&v1.NamespaceList{
 				Items: namespaces,
 			},
-			&v1.PodList{
-				Items: podsList,
-			},
-			&knet.NetworkPolicyList{
-				Items: networkPolicies,
-			},
 		)
-		for _, testPod := range pods {
-			testPod.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, nodeName))
-		}
-		var err error
-		if namespaces != nil {
-			err = fakeOvn.controller.WatchNamespaces()
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		}
-		if pods != nil {
-			err = fakeOvn.controller.WatchPods()
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		}
-		err = fakeOvn.controller.WatchNetworkPolicy()
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		err := fakeController.StartSelectorBasedHandlers()
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 	}
 
 	ginkgo.It("validates selectors", func() {
-		// start ovn without any objects
-		startOvn(initialDB, nil, nil, nil, nil)
-		namespace := *newNamespace(namespaceName1)
-		networkPolicy := getMatchLabelsNetworkPolicy(netPolicyName1, namespace.Name,
-			"", "label1", true, true)
+		startController(nil)
+		backRef := "backRef"
+
 		// create peer with invalid Operator
 		peer := knet.NetworkPolicyPeer{
 			PodSelector: &metav1.LabelSelector{
@@ -113,49 +162,54 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 			},
 		}
 		// try to add invalid peer
-		peerASKey, _, _, err := fakeOvn.controller.podAddressSetController.EnsureAddressSet(
-			peer.PodSelector, peer.NamespaceSelector, networkPolicy.Namespace, getPolicyKeyWithKind(networkPolicy))
+		peerASKey, _, _, err := fakeController.podAddressSetController.EnsureAddressSet(
+			peer.PodSelector, peer.NamespaceSelector, namespaceName1, backRef)
 		// error should happen on handler add
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("is not a valid label selector operator"))
 		// address set will not be created
-		peerASIDs := getPodSelectorAddrSetDbIDs(peerASKey, DefaultNetworkControllerName)
-		fakeOvn.asf.EventuallyExpectNoAddressSet(peerASIDs)
+		peerASIDs := GetPodSelectorAddrSetDbIDs(peerASKey, fakeController.controllerName)
+		fakeController.asf.EventuallyExpectNoAddressSet(peerASIDs)
 
 		// add nil pod selector
-		peerASKey, _, _, err = fakeOvn.controller.podAddressSetController.EnsureAddressSet(
-			nil, peer.NamespaceSelector, networkPolicy.Namespace, getPolicyKeyWithKind(networkPolicy))
+		peerASKey, _, _, err = fakeController.podAddressSetController.EnsureAddressSet(
+			nil, peer.NamespaceSelector, namespaceName1, backRef)
 		// error should happen on handler add
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("pod selector is nil"))
 		// address set will not be created
-		peerASIDs = getPodSelectorAddrSetDbIDs(peerASKey, DefaultNetworkControllerName)
-		fakeOvn.asf.EventuallyExpectNoAddressSet(peerASIDs)
+		peerASIDs = GetPodSelectorAddrSetDbIDs(peerASKey, fakeController.controllerName)
+		fakeController.asf.EventuallyExpectNoAddressSet(peerASIDs)
 
 		// namespace selector is nil and namespace is empty
-		peerASKey, _, _, err = fakeOvn.controller.podAddressSetController.EnsureAddressSet(
-			peer.PodSelector, nil, "", getPolicyKeyWithKind(networkPolicy))
+		peerASKey, _, _, err = fakeController.podAddressSetController.EnsureAddressSet(
+			peer.PodSelector, nil, "", backRef)
 		// error should happen on handler add
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("namespace selector is nil and namespace is empty"))
 		// address set will not be created
-		peerASIDs = getPodSelectorAddrSetDbIDs(peerASKey, DefaultNetworkControllerName)
-		fakeOvn.asf.EventuallyExpectNoAddressSet(peerASIDs)
+		peerASIDs = GetPodSelectorAddrSetDbIDs(peerASKey, fakeController.controllerName)
+		fakeController.asf.EventuallyExpectNoAddressSet(peerASIDs)
 	})
 	ginkgo.It("creates one address set for multiple users with the same selector", func() {
-		namespace1 := *newNamespace(namespaceName1)
-		namespace2 := *newNamespace(namespaceName2)
-		networkPolicy1 := getMatchLabelsNetworkPolicy(netPolicyName1, namespace1.Name,
-			"", "label1", true, true)
-		networkPolicy2 := getMatchLabelsNetworkPolicy(netPolicyName2, namespace2.Name,
-			"", "label1", true, true)
-		startOvn(initialDB, []v1.Namespace{namespace1}, []knet.NetworkPolicy{*networkPolicy1, *networkPolicy2},
-			nil, nil)
+		startController(nil)
+		podSelector := &metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				"name": "label1",
+			},
+		}
 
-		fakeOvn.asf.ExpectEmptyAddressSet(namespaceName1)
-		peer := networkPolicy1.Spec.Ingress[0].From[0]
-		peerASKey := getPodSelectorKey(peer.PodSelector, peer.NamespaceSelector, namespace1.Name)
-		peerASIDs := getPodSelectorAddrSetDbIDs(peerASKey, DefaultNetworkControllerName)
-		fakeOvn.asf.EventuallyExpectEmptyAddressSetExist(peerASIDs)
-		// expect namespace and peer address sets only
-		fakeOvn.asf.ExpectNumberOfAddressSets(2)
+		backRef1 := "networkPolicy1"
+		backRef2 := "networkPolicy2"
+		peerASKey1, _, _, err := fakeController.podAddressSetController.EnsureAddressSet(
+			podSelector, nil, namespaceName1, backRef1)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		peerASKey2, _, _, err := fakeController.podAddressSetController.EnsureAddressSet(
+			podSelector, nil, namespaceName1, backRef2)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(peerASKey2).To(gomega.Equal(peerASKey1))
+
+		peerASIDs := GetPodSelectorAddrSetDbIDs(peerASKey1, fakeController.controllerName)
+		fakeController.asf.EventuallyExpectEmptyAddressSetExist(peerASIDs)
+		// expect only 1 peer address set
+		fakeController.asf.ExpectNumberOfAddressSets(1)
 	})
 	table.DescribeTable("adds selected pod ips to the address set",
 		func(peer knet.NetworkPolicyPeer, staticNamespace string, addrSetIPs []string) {
@@ -170,7 +224,7 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 				pod.Labels = map[string]string{podLabelKey: pod.Name}
 				podsList = append(podsList, *pod)
 			}
-			fakeOvn.startWithDBSetup(libovsdbtest.TestSetup{},
+			fakeController.startWithDBSetup(libovsdbtest.TestSetup{},
 				&v1.NamespaceList{
 					Items: []v1.Namespace{namespace1, namespace2},
 				},
@@ -179,12 +233,12 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 				},
 			)
 
-			peerASKey, _, _, err := fakeOvn.controller.podAddressSetController.EnsureAddressSet(
+			peerASKey, _, _, err := fakeController.podAddressSetController.EnsureAddressSet(
 				peer.PodSelector, peer.NamespaceSelector, staticNamespace, "backRef")
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			// address set should be created and pod ips added
-			peerASIDs := getPodSelectorAddrSetDbIDs(peerASKey, DefaultNetworkControllerName)
-			fakeOvn.asf.ExpectAddressSetWithIPs(peerASIDs, addrSetIPs)
+			peerASIDs := GetPodSelectorAddrSetDbIDs(peerASKey, fakeController.controllerName)
+			fakeController.asf.ExpectAddressSetWithIPs(peerASIDs, addrSetIPs)
 		},
 		table.Entry("all pods from a static namespace", knet.NetworkPolicyPeer{
 			PodSelector:       &metav1.LabelSelector{},
@@ -233,86 +287,90 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 	)
 	ginkgo.It("is cleaned up with DeleteAddressSet call", func() {
 		// start ovn without any objects
-		startOvn(initialDB, nil, nil, nil, nil)
-		namespace := *newNamespace(namespaceName1)
-		networkPolicy := getMatchLabelsNetworkPolicy(netPolicyName1, namespace.Name,
-			"", "label1", true, true)
-		peer := networkPolicy.Spec.Ingress[0].From[0]
+		startController(nil)
 
+		podSelector := &metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				"name": "label1",
+			},
+		}
+		backRef1 := "networkPolicy1"
 		// make asf return error on the next NewAddressSet call
-		fakeOvn.asf.ErrOnNextNewASCall()
-		peerASKey, _, _, err := fakeOvn.controller.podAddressSetController.EnsureAddressSet(
-			peer.PodSelector, peer.NamespaceSelector, networkPolicy.Namespace, getPolicyKeyWithKind(networkPolicy))
+		fakeController.asf.ErrOnNextNewASCall()
+		peerASKey, _, _, err := fakeController.podAddressSetController.EnsureAddressSet(
+			podSelector, nil, namespaceName1, backRef1)
 		// error should happen on address set add
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(addressset.FakeASFError))
 		// address set should not be created
-		peerASIDs := getPodSelectorAddrSetDbIDs(peerASKey, DefaultNetworkControllerName)
-		fakeOvn.asf.EventuallyExpectNoAddressSet(peerASIDs)
+		peerASIDs := GetPodSelectorAddrSetDbIDs(peerASKey, fakeController.controllerName)
+		fakeController.asf.EventuallyExpectNoAddressSet(peerASIDs)
 		// peerAddressSet should be present in the map with needsCleanup=true
-		asObj, loaded := fakeOvn.controller.podAddressSetController.podSelectorAddressSets.Load(peerASKey)
+		asObj, loaded := fakeController.podAddressSetController.podSelectorAddressSets.Load(peerASKey)
 		gomega.Expect(loaded).To(gomega.BeTrue())
 		gomega.Expect(asObj.needsCleanup).To(gomega.BeTrue())
 		// delete invalid peer, check all resources are cleaned up
-		err = fakeOvn.controller.podAddressSetController.DeleteAddressSet(peerASKey, getPolicyKeyWithKind(networkPolicy))
+		err = fakeController.podAddressSetController.DeleteAddressSet(peerASKey, backRef1)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		// address set should still not exist
-		fakeOvn.asf.EventuallyExpectNoAddressSet(peerASIDs)
-		fakeOvn.asf.ExpectNumberOfAddressSets(0)
+		fakeController.asf.EventuallyExpectNoAddressSet(peerASIDs)
+		fakeController.asf.ExpectNumberOfAddressSets(0)
 		// peerAddressSet should be deleted from the map
-		_, loaded = fakeOvn.controller.podAddressSetController.podSelectorAddressSets.Load(peerASKey)
+		_, loaded = fakeController.podAddressSetController.podSelectorAddressSets.Load(peerASKey)
 		gomega.Expect(loaded).To(gomega.BeFalse())
 	})
 	ginkgo.It("is cleaned up with second GetPodSelectorAddressSet call", func() {
 		// start ovn without any objects
-		startOvn(initialDB, nil, nil, nil, nil)
-		namespace := *newNamespace(namespaceName1)
-		networkPolicy := getMatchLabelsNetworkPolicy(netPolicyName1, namespace.Name,
-			"", "label1", true, true)
-		peer := networkPolicy.Spec.Ingress[0].From[0]
+		startController(nil)
+		podSelector := &metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				"name": "label1",
+			},
+		}
+		backRef1 := "networkPolicy1"
 
 		// make asf return error on the next NewAddressSet call
-		fakeOvn.asf.ErrOnNextNewASCall()
-		peerASKey, _, _, err := fakeOvn.controller.podAddressSetController.EnsureAddressSet(
-			peer.PodSelector, peer.NamespaceSelector, networkPolicy.Namespace, getPolicyKeyWithKind(networkPolicy))
+		fakeController.asf.ErrOnNextNewASCall()
+		peerASKey, _, _, err := fakeController.podAddressSetController.EnsureAddressSet(
+			podSelector, nil, namespaceName1, backRef1)
 		// error should happen on address set add
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(addressset.FakeASFError))
 		// address set should not be created
-		peerASIDs := getPodSelectorAddrSetDbIDs(peerASKey, DefaultNetworkControllerName)
-		fakeOvn.asf.EventuallyExpectNoAddressSet(peerASIDs)
+		peerASIDs := GetPodSelectorAddrSetDbIDs(peerASKey, fakeController.controllerName)
+		fakeController.asf.EventuallyExpectNoAddressSet(peerASIDs)
 		// peerAddressSet should be present in the map with needsCleanup=true
-		asObj, loaded := fakeOvn.controller.podAddressSetController.podSelectorAddressSets.Load(peerASKey)
+		asObj, loaded := fakeController.podAddressSetController.podSelectorAddressSets.Load(peerASKey)
 		gomega.Expect(loaded).To(gomega.BeTrue())
 		gomega.Expect(asObj.needsCleanup).To(gomega.BeTrue())
 		// run add again, NewAddressSet should succeed this time
-		peerASKey, _, _, err = fakeOvn.controller.podAddressSetController.EnsureAddressSet(
-			peer.PodSelector, peer.NamespaceSelector, networkPolicy.Namespace, getPolicyKeyWithKind(networkPolicy))
+		peerASKey, _, _, err = fakeController.podAddressSetController.EnsureAddressSet(
+			podSelector, nil, namespaceName1, backRef1)
 		// address set should be created
-		fakeOvn.asf.ExpectEmptyAddressSet(peerASIDs)
-		fakeOvn.asf.ExpectNumberOfAddressSets(1)
+		fakeController.asf.ExpectEmptyAddressSet(peerASIDs)
+		fakeController.asf.ExpectNumberOfAddressSets(1)
 		// peerAddressSet should be present in the map with needsCleanup=false
-		asObj, loaded = fakeOvn.controller.podAddressSetController.podSelectorAddressSets.Load(peerASKey)
+		asObj, loaded = fakeController.podAddressSetController.podSelectorAddressSets.Load(peerASKey)
 		gomega.Expect(loaded).To(gomega.BeTrue())
 		gomega.Expect(asObj.needsCleanup).To(gomega.BeFalse())
 	})
 	ginkgo.It("on cleanup deletes unreferenced and leaves referenced address sets", func() {
 		namespaceName := "namespace1"
 		policyName := "networkpolicy1"
-		staleNetpolIDs := getStaleNetpolAddrSetDbIDs(namespaceName, policyName, "ingress", "0", DefaultNetworkControllerName)
+		staleNetpolIDs := getStaleNetpolAddrSetDbIDs(namespaceName, policyName, "ingress", "0", fakeController.controllerName)
 		staleNetpolAS, _ := addressset.GetDbObjsForAS(staleNetpolIDs, []net.IP{net.ParseIP("1.1.1.1")})
 		staleNetpolAS.UUID = staleNetpolAS.Name + "-UUID"
-		unusedPodSelIDs := getPodSelectorAddrSetDbIDs("pasName", DefaultNetworkControllerName)
+		unusedPodSelIDs := GetPodSelectorAddrSetDbIDs("pasName", fakeController.controllerName)
 		unusedPodSelAS, _ := addressset.GetDbObjsForAS(unusedPodSelIDs, []net.IP{net.ParseIP("1.1.1.2")})
 		unusedPodSelAS.UUID = unusedPodSelAS.Name + "-UUID"
-		refNetpolIDs := getStaleNetpolAddrSetDbIDs(namespaceName, policyName, "egress", "0", DefaultNetworkControllerName)
+		refNetpolIDs := getStaleNetpolAddrSetDbIDs(namespaceName, policyName, "egress", "0", fakeController.controllerName)
 		refNetpolAS, _ := addressset.GetDbObjsForAS(refNetpolIDs, []net.IP{net.ParseIP("1.1.1.3")})
 		refNetpolAS.UUID = refNetpolAS.Name + "-UUID"
 		netpolACL := libovsdbops.BuildACL(
 			"netpolACL",
 			nbdb.ACLDirectionFromLport,
-			types.EgressFirewallStartPriority,
+			ovntypes.EgressFirewallStartPriority,
 			fmt.Sprintf("ip4.src == {$%s} && outport == @a13757631697825269621", refNetpolAS.Name),
 			nbdb.ACLActionAllowRelated,
-			types.OvnACLLoggingMeter,
+			ovntypes.OvnACLLoggingMeter,
 			"",
 			false,
 			nil,
@@ -321,16 +379,16 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 			},
 		)
 		netpolACL.UUID = "netpolACL-UUID"
-		refPodSelIDs := getPodSelectorAddrSetDbIDs("pasName2", DefaultNetworkControllerName)
+		refPodSelIDs := GetPodSelectorAddrSetDbIDs("pasName2", fakeController.controllerName)
 		refPodSelAS, _ := addressset.GetDbObjsForAS(refPodSelIDs, []net.IP{net.ParseIP("1.1.1.4")})
 		refPodSelAS.UUID = refPodSelAS.Name + "-UUID"
 		podSelACL := libovsdbops.BuildACL(
 			"podSelACL",
 			nbdb.ACLDirectionFromLport,
-			types.EgressFirewallStartPriority,
+			ovntypes.EgressFirewallStartPriority,
 			fmt.Sprintf("ip4.src == {$%s} && outport == @a13757631697825269621", refPodSelAS.Name),
 			nbdb.ACLActionAllowRelated,
-			types.OvnACLLoggingMeter,
+			ovntypes.OvnACLLoggingMeter,
 			"",
 			false,
 			nil,
@@ -349,9 +407,9 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 			podSelACL,
 		}
 		dbSetup := libovsdbtest.TestSetup{NBData: initialDb}
-		fakeOvn.startWithDBSetup(dbSetup)
+		fakeController.startWithDBSetup(dbSetup)
 
-		err := fakeOvn.controller.cleanupPodSelectorAddressSets()
+		err := CleanupPodSelectorAddressSets(fakeController.nbClient, fakeController.controllerName)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		finalDB := []libovsdbtest.TestData{
@@ -360,7 +418,7 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 			refPodSelAS,
 			podSelACL,
 		}
-		gomega.Eventually(fakeOvn.nbClient).Should(libovsdbtest.HaveData(finalDB))
+		gomega.Eventually(fakeController.nbClient).Should(libovsdbtest.HaveData(finalDB))
 	})
 	ginkgo.It("reconciles a completed and deleted pod whose IP has been assigned to a running pod", func() {
 		namespace1 := *newNamespace(namespaceName1)
@@ -370,34 +428,25 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 			PodSelector: &metav1.LabelSelector{},
 		}
 
-		fakeOvn.startWithDBSetup(initialDB,
-			&v1.NamespaceList{
-				Items: []v1.Namespace{
-					namespace1,
-				},
-			},
-		)
+		startController([]v1.Namespace{namespace1})
 
-		err := fakeOvn.controller.StartSelectorBasedHandlers()
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-
-		_, _, _, err = fakeOvn.controller.podAddressSetController.EnsureAddressSet(
+		_, _, _, err := fakeController.podAddressSetController.EnsureAddressSet(
 			peer.PodSelector, peer.NamespaceSelector, namespace1.Name, "backRef")
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		// Start a pod
-		completedPod, err := fakeOvn.fakeClient.KubeClient.CoreV1().Pods(namespace1.Name).
+		completedPod, err := fakeController.fakeClient.KubeClient.CoreV1().Pods(namespace1.Name).
 			Create(
 				context.TODO(),
 				newPod(namespace1.Name, "completed-pod", nodeName, podIP),
 				metav1.CreateOptions{})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		// pod should be added to the address set
-		eventuallyExpectAddressSetsWithIP(fakeOvn, peer, namespace1.Name, podIP)
+		eventuallyExpectAddressSetsWithIP(fakeController, peer, namespace1.Name, podIP)
 
 		// Spawn a pod with an IP address that collides with a completed pod (we don't watch pods in this test,
 		// therefore the same ip is allowed)
-		_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(namespace1.Name).
+		_, err = fakeController.fakeClient.KubeClient.CoreV1().Pods(namespace1.Name).
 			Create(
 				context.TODO(),
 				newPod(namespace1.Name, "running-pod", nodeName, podIP),
@@ -406,14 +455,14 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 
 		// Mark the pod as Completed, so delete event will be generated
 		completedPod.Status.Phase = v1.PodSucceeded
-		completedPod, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(completedPod.Namespace).
+		completedPod, err = fakeController.fakeClient.KubeClient.CoreV1().Pods(completedPod.Namespace).
 			Update(context.TODO(), completedPod, metav1.UpdateOptions{})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		// make sure the delete event is handled and address set is not changed
 		time.Sleep(100 * time.Millisecond)
 		// Running pod policy should not be affected by pod deletions
-		eventuallyExpectAddressSetsWithIP(fakeOvn, peer, namespace1.Name, podIP)
+		eventuallyExpectAddressSetsWithIP(fakeController, peer, namespace1.Name, podIP)
 	})
 	ginkgo.It("reconciles a completed pod whose IP has been assigned to a running pod with non-matching namespace selector", func() {
 		namespace1 := *newNamespace(namespaceName1)
@@ -429,35 +478,25 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 			},
 		}
 
-		fakeOvn.startWithDBSetup(initialDB,
-			&v1.NamespaceList{
-				Items: []v1.Namespace{
-					namespace1,
-					namespace2,
-				},
-			},
-		)
+		startController([]v1.Namespace{namespace1, namespace2})
 
-		err := fakeOvn.controller.StartSelectorBasedHandlers()
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-
-		_, _, _, err = fakeOvn.controller.podAddressSetController.EnsureAddressSet(
+		_, _, _, err := fakeController.podAddressSetController.EnsureAddressSet(
 			peer.PodSelector, peer.NamespaceSelector, namespace1.Name, "backRef")
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		// Start a pod
-		completedPod, err := fakeOvn.fakeClient.KubeClient.CoreV1().Pods(namespace1.Name).
+		completedPod, err := fakeController.fakeClient.KubeClient.CoreV1().Pods(namespace1.Name).
 			Create(
 				context.TODO(),
 				newPod(namespace1.Name, "completed-pod", nodeName, podIP),
 				metav1.CreateOptions{})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		// pod should be added to the address set
-		eventuallyExpectAddressSetsWithIP(fakeOvn, peer, namespace1.Name, podIP)
+		eventuallyExpectAddressSetsWithIP(fakeController, peer, namespace1.Name, podIP)
 
 		// Spawn a pod with an IP address that collides with a completed pod (we don't watch pods in this test,
 		// therefore the same ip is allowed). This pod has another namespace that is not matched by the address set
-		_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(namespace2.Name).
+		_, err = fakeController.fakeClient.KubeClient.CoreV1().Pods(namespace2.Name).
 			Create(
 				context.TODO(),
 				newPod(namespace2.Name, "running-pod", nodeName, podIP),
@@ -466,13 +505,13 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 
 		// Mark the pod as Completed, so delete event will be generated
 		completedPod.Status.Phase = v1.PodSucceeded
-		completedPod, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(completedPod.Namespace).
+		completedPod, err = fakeController.fakeClient.KubeClient.CoreV1().Pods(completedPod.Namespace).
 			Update(context.TODO(), completedPod, metav1.UpdateOptions{})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		// IP should be deleted from the address set on delete event, since the new pod with the same ip
 		// should not be present in given address set
-		eventuallyExpectEmptyAddressSetsExist(fakeOvn, peer, namespace1.Name)
+		eventuallyExpectEmptyAddressSetsExist(fakeController, peer, namespace1.Name)
 	})
 })
 

@@ -1,4 +1,4 @@
-package ovn
+package selector_based_controllers
 
 import (
 	"fmt"
@@ -120,7 +120,7 @@ func (c *PodAddressSetController) EnsureAddressSet(podSelector, namespaceSelecto
 		err = fmt.Errorf("can't parse pod selector %v: %w", podSelector, err)
 		return
 	}
-	addrSetKey = getPodSelectorKey(podSelector, namespaceSelector, namespace)
+	addrSetKey = GetPodSelectorKey(podSelector, namespaceSelector, namespace)
 	err = c.podSelectorAddressSets.DoWithLock(addrSetKey, func(key string) error {
 		psAddrSet, found := c.podSelectorAddressSets.Load(key)
 		if !found {
@@ -130,7 +130,7 @@ func (c *PodAddressSetController) EnsureAddressSet(podSelector, namespaceSelecto
 				podSelector:       podSel,
 				namespaceSelector: nsSel,
 				namespace:         namespace,
-				addrSetDbIDs:      getPodSelectorAddrSetDbIDs(addrSetKey, c.controllerName),
+				addrSetDbIDs:      GetPodSelectorAddrSetDbIDs(addrSetKey, c.controllerName),
 				podHandlerIdx:     selector_based_handler.NoHandler,
 				nsHandlerIdx:      selector_based_handler.NoHandler,
 			}
@@ -157,8 +157,8 @@ func (c *PodAddressSetController) EnsureAddressSet(podSelector, namespaceSelecto
 		}
 		// psAddrSet is successfully inited, and doesn't need cleanup
 		psAddrSet.backRefs[backRef] = true
-		psAddrSetHashV4, psAddrSetHashV6, err = psAddrSet.handlerResources.GetASHashNames()
-		return err
+		psAddrSetHashV4, psAddrSetHashV6 = psAddrSet.handlerResources.addressSet.GetASHashNames()
+		return nil
 	})
 	if err != nil {
 		return
@@ -331,11 +331,6 @@ func (handlerInfo *PodSelectorAddrSetHandlerInfo) destroy(c *PodAddressSetContro
 	return nil
 }
 
-func (handlerInfo *PodSelectorAddrSetHandlerInfo) GetASHashNames() (string, string, error) {
-	v4Hash, v6Hash := handlerInfo.addressSet.GetASHashNames()
-	return v4Hash, v6Hash, nil
-}
-
 // addPods will get all currently assigned ips for given pods, and add them to the address set.
 // If pod ips change, this function should be called again.
 // must be called with PodSelectorAddrSetHandlerInfo read lock
@@ -439,7 +434,11 @@ func (c *PodAddressSetController) podSelectorPodNeedsDelete(pod *kapi.Pod, podHa
 		return "", fmt.Errorf("can't get pod IPs %s/%s: %w", pod.Namespace, pod.Name, err)
 	}
 	// completed pod be deleted a long time ago, check if there is a new pod with that same ip
-	collidingPod, err := findPodWithIPAddresses(ips, c.watchFactory, c.netInfo)
+	allPods, err := c.watchFactory.GetAllPods()
+	if err != nil {
+		return "", fmt.Errorf("unable to get pods: %w", err)
+	}
+	collidingPod, err := util.FindPodWithIPAddresses(ips, allPods, c.netInfo)
 	if err != nil {
 		return "", fmt.Errorf("lookup for pods with the same IPs [%s] failed: %w", util.JoinIPs(ips, " "), err)
 	}
@@ -611,7 +610,7 @@ func (handlerInfo *namespaceHandler) OnDelete(obj interface{}) error {
 	return handlerInfo.controller.handleNamespaceDel(handlerInfo.handlerInfo, obj)
 }
 
-func getPodSelectorAddrSetDbIDs(psasKey, controller string) *libovsdbops.DbObjectIDs {
+func GetPodSelectorAddrSetDbIDs(psasKey, controller string) *libovsdbops.DbObjectIDs {
 	return libovsdbops.NewDbObjectIDs(libovsdbops.AddressSetPodSelector, controller, map[libovsdbops.ExternalIDKey]string{
 		// pod selector address sets are cluster-scoped, only need name
 		libovsdbops.ObjectNameKey: psasKey,
@@ -682,7 +681,7 @@ func shortLabelSelectorString(sel *metav1.LabelSelector) string {
 	return s
 }
 
-func getPodSelectorKey(podSelector, namespaceSelector *metav1.LabelSelector, namespace string) string {
+func GetPodSelectorKey(podSelector, namespaceSelector *metav1.LabelSelector, namespace string) string {
 	var namespaceKey string
 	if namespaceSelector == nil {
 		// namespace is static
@@ -693,21 +692,21 @@ func getPodSelectorKey(podSelector, namespaceSelector *metav1.LabelSelector, nam
 	return namespaceKey + "_" + shortLabelSelectorString(podSelector)
 }
 
-func (bnc *BaseNetworkController) cleanupPodSelectorAddressSets() error {
-	err := bnc.deleteStaleNetpolPeerAddrSets()
+func CleanupPodSelectorAddressSets(nbClient libovsdbclient.Client, controllerName string) error {
+	err := deleteStaleNetpolPeerAddrSets(nbClient, controllerName)
 	if err != nil {
 		return fmt.Errorf("can't delete stale netpol address sets %w", err)
 	}
 
-	predicateIDs := libovsdbops.NewDbObjectIDs(libovsdbops.AddressSetPodSelector, bnc.controllerName, nil)
-	return deleteAddrSetsWithoutACLRef(predicateIDs, bnc.nbClient)
+	predicateIDs := libovsdbops.NewDbObjectIDs(libovsdbops.AddressSetPodSelector, controllerName, nil)
+	return deleteAddrSetsWithoutACLRef(predicateIDs, nbClient)
 }
 
 // network policies will start using new shared address sets after the initial Add events handling.
 // On the next restart old address sets will be unreferenced and can be safely deleted.
-func (bnc *BaseNetworkController) deleteStaleNetpolPeerAddrSets() error {
-	predicateIDs := libovsdbops.NewDbObjectIDs(libovsdbops.AddressSetNetworkPolicy, bnc.controllerName, nil)
-	return deleteAddrSetsWithoutACLRef(predicateIDs, bnc.nbClient)
+func deleteStaleNetpolPeerAddrSets(nbClient libovsdbclient.Client, controllerName string) error {
+	predicateIDs := libovsdbops.NewDbObjectIDs(libovsdbops.AddressSetNetworkPolicy, controllerName, nil)
+	return deleteAddrSetsWithoutACLRef(predicateIDs, nbClient)
 }
 
 func deleteAddrSetsWithoutACLRef(predicateIDs *libovsdbops.DbObjectIDs,

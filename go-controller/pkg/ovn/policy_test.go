@@ -19,6 +19,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/selector_based_controllers"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
@@ -300,7 +301,7 @@ func getGressACLs(gressIdx int, namespace, policyName string, peerNamespaces []s
 		podSel, _ := metav1.LabelSelectorAsSelector(peer.PodSelector)
 		nsSel, _ := metav1.LabelSelectorAsSelector(peer.NamespaceSelector)
 		if !((peer.PodSelector == nil || podSel.Empty()) && (peer.NamespaceSelector == nil || !nsSel.Empty())) {
-			peerIndex := getPodSelectorAddrSetDbIDs(getPodSelectorKey(peer.PodSelector, peer.NamespaceSelector, namespace), controllerName)
+			peerIndex := selector_based_controllers.GetPodSelectorAddrSetDbIDs(selector_based_controllers.GetPodSelectorKey(peer.PodSelector, peer.NamespaceSelector, namespace), controllerName)
 			asv4, _ := addressset.GetHashNamesForAS(peerIndex)
 			hashedASNames = append(hashedASNames, asv4)
 		}
@@ -523,20 +524,20 @@ func getHairpinningACLsV4AndPortGroup() []libovsdbtest.TestData {
 }
 
 func eventuallyExpectNoAddressSets(fakeOvn *FakeOVN, peer knet.NetworkPolicyPeer, namespace string) {
-	dbIDs := getPodSelectorAddrSetDbIDs(getPodSelectorKey(peer.PodSelector, peer.NamespaceSelector, namespace), DefaultNetworkControllerName)
+	dbIDs := selector_based_controllers.GetPodSelectorAddrSetDbIDs(selector_based_controllers.GetPodSelectorKey(peer.PodSelector, peer.NamespaceSelector, namespace), DefaultNetworkControllerName)
 	fakeOvn.asf.EventuallyExpectNoAddressSet(dbIDs)
 }
 
 func eventuallyExpectAddressSetsWithIP(fakeOvn *FakeOVN, peer knet.NetworkPolicyPeer, namespace, ip string) {
 	if peer.PodSelector != nil {
-		dbIDs := getPodSelectorAddrSetDbIDs(getPodSelectorKey(peer.PodSelector, peer.NamespaceSelector, namespace), DefaultNetworkControllerName)
+		dbIDs := selector_based_controllers.GetPodSelectorAddrSetDbIDs(selector_based_controllers.GetPodSelectorKey(peer.PodSelector, peer.NamespaceSelector, namespace), DefaultNetworkControllerName)
 		fakeOvn.asf.EventuallyExpectAddressSetWithIPs(dbIDs, []string{ip})
 	}
 }
 
 func eventuallyExpectEmptyAddressSetsExist(fakeOvn *FakeOVN, peer knet.NetworkPolicyPeer, namespace string) {
 	if peer.PodSelector != nil {
-		dbIDs := getPodSelectorAddrSetDbIDs(getPodSelectorKey(peer.PodSelector, peer.NamespaceSelector, namespace), DefaultNetworkControllerName)
+		dbIDs := selector_based_controllers.GetPodSelectorAddrSetDbIDs(selector_based_controllers.GetPodSelectorKey(peer.PodSelector, peer.NamespaceSelector, namespace), DefaultNetworkControllerName)
 		fakeOvn.asf.EventuallyExpectEmptyAddressSetExist(dbIDs)
 	}
 }
@@ -2142,7 +2143,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Low-Level Operations", func() {
 		asFactory = addressset.NewFakeAddressSetFactory(controllerName)
 		config.IPv4Mode = true
 		config.IPv6Mode = false
-		asIDs := getPodSelectorAddrSetDbIDs("test_name", DefaultNetworkControllerName)
+		asIDs := selector_based_controllers.GetPodSelectorAddrSetDbIDs("test_name", DefaultNetworkControllerName)
 		gp := newGressPolicy(knet.PolicyTypeIngress, 0, "testing", "policy", controllerName,
 			false, &util.DefaultNetInfo{})
 		gp.hasPeerSelector = true

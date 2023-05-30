@@ -19,6 +19,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/selector_based_controllers"
 	ovnretry "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/selector_based_handler"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
@@ -122,7 +123,7 @@ type BaseNetworkController struct {
 
 	netpolSharedPGController *NetpolSharedPortGroupsController
 
-	podAddressSetController *PodAddressSetController
+	podAddressSetController *selector_based_controllers.PodAddressSetController
 
 	// stopChan per controller
 	stopChan chan struct{}
@@ -198,7 +199,7 @@ func (bnc *BaseNetworkController) initSelectorBasedHandlers() {
 		bnc.watchFactory, bnc.stopChan, bnc.wg)
 	bnc.namespaceSelectorHandler = selector_based_handler.NewEventBasedWatcher(factory.NamespaceSelectorType, bnc.watchFactory.NamespaceInformer().Informer(),
 		bnc.watchFactory, bnc.stopChan, bnc.wg)
-	bnc.podAddressSetController = NewPodAddressSetController(bnc.controllerName,
+	bnc.podAddressSetController = selector_based_controllers.NewPodAddressSetController(bnc.controllerName,
 		bnc.addressSetFactory, bnc.watchFactory, bnc.NetInfo, bnc.podSelectorHandler, bnc.namespaceSelectorHandler)
 }
 

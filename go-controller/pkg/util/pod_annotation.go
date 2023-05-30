@@ -340,6 +340,30 @@ func GetPodIPsOfNetwork(pod *v1.Pod, nInfo NetInfo) ([]net.IP, error) {
 	return []net.IP{ip}, nil
 }
 
+func FindPodWithIPAddresses(needleIPs []net.IP, allPods []*v1.Pod, netInfo NetInfo) (*v1.Pod, error) {
+	// iterate through all pods
+	for _, p := range allPods {
+		if PodCompleted(p) || PodWantsHostNetwork(p) || !PodScheduled(p) {
+			continue
+		}
+		// check if the pod addresses match in the OVN annotation
+		haystackPodAddrs, err := GetPodIPsOfNetwork(p, netInfo)
+		if err != nil {
+			continue
+		}
+
+		for _, haystackPodAddr := range haystackPodAddrs {
+			for _, needleIP := range needleIPs {
+				if haystackPodAddr.Equal(needleIP) {
+					return p, nil
+				}
+			}
+		}
+	}
+
+	return nil, nil
+}
+
 // GetK8sPodDefaultNetworkSelection get pod default network from annotations
 func GetK8sPodDefaultNetworkSelection(pod *v1.Pod) (*nadapi.NetworkSelectionElement, error) {
 	var netAnnot string
