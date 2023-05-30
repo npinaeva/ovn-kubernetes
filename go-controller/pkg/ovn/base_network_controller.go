@@ -137,6 +137,8 @@ type BaseNetworkController struct {
 
 	podSelectorHandler       *selector_based_handler.EventBasedWatcher
 	namespaceSelectorHandler *selector_based_handler.EventBasedWatcher
+
+	podExtraHandlers *selector_based_handler.PodExtraHandlersManager
 }
 
 func NewBaseNetworkController(cnci *CommonNetworkControllerInfo, addressSetFactory addressset.AddressSetFactory,
@@ -157,7 +159,7 @@ func NewBaseNetworkController(cnci *CommonNetworkControllerInfo, addressSetFacto
 	if initiLocalZoneNodes {
 		c.localZoneNodes = &sync.Map{}
 	}
-	c.netpolSharedPGController = NewNetpolSharedPortGroupController(c.nbClient, c.controllerName, c.AddConfigDurationRecord)
+	c.podExtraHandlers = selector_based_handler.NewPodPostHandlersManager(c.watchFactory.PodInformer(), c.lspGetter)
 	return c
 }
 
@@ -800,4 +802,18 @@ func (bnc *BaseNetworkController) GetLocalZoneNodes() ([]*kapi.Node, error) {
 // isLocalZoneNode returns true if the node is part of the local zone.
 func (bnc *BaseNetworkController) isLocalZoneNode(node *kapi.Node) bool {
 	return util.GetNodeZone(node) == bnc.zone
+}
+
+func (bnc *BaseNetworkController) lspGetter(pod *kapi.Pod) []selector_based_handler.LSPInfo {
+	nadNames := bnc.getPodNADNames(pod)
+	lspInfos := []selector_based_handler.LSPInfo{}
+	for _, nadName := range nadNames {
+		portInfo, err := bnc.logicalPortCache.get(pod, nadName)
+		lspInfo := selector_based_handler.LSPInfo{Err: err}
+		if err == nil {
+			lspInfo.UUID = portInfo.uuid
+		}
+		lspInfos = append(lspInfos, lspInfo)
+	}
+	return lspInfos
 }

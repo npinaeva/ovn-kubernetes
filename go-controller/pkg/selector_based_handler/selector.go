@@ -40,7 +40,7 @@ func filterFunc(o selectorInfo, obj interface{}) (bool, error) {
 
 func getObjectMeta(objType reflect.Type, obj interface{}) (*metav1.ObjectMeta, error) {
 	switch objType {
-	case factory.PodSelectorType:
+	case factory.PodSelectorType, factory.PodType:
 		if pod, ok := obj.(*kapi.Pod); ok {
 			return &pod.ObjectMeta, nil
 		}

@@ -257,6 +257,12 @@ func (bnc *BaseNetworkController) deletePodLogicalPort(pod *kapi.Pod, portInfo *
 	}
 	allOps = append(allOps, ops...)
 
+	ops, err = bnc.podExtraHandlers.DeletePodOps(pod, portUUID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get extra handlers ops for pod delete: %w", err)
+	}
+	allOps = append(allOps, ops...)
+
 	recordOps, txOkCallBack, _, err := bnc.AddConfigDurationRecord("pod", pod.Namespace, pod.Name)
 	if err != nil {
 		klog.Errorf("Failed to record config duration: %v", err)
@@ -724,6 +730,12 @@ func (bnc *BaseNetworkController) addLogicalPortToNetwork(pod *kapi.Pod, nadName
 		return nil, nil, nil, false,
 			fmt.Errorf("error creating logical switch port %+v on switch %+v: %+v", *lsp, *ls, err)
 	}
+	extraOps, err := bnc.podExtraHandlers.AddPodOps(pod, lsp.UUID)
+	if err != nil {
+		return nil, nil, nil, false,
+			fmt.Errorf("failed to get extra handlers ops for pod add: %w", err)
+	}
+	ops = append(ops, extraOps...)
 
 	return ops, lsp, podAnnotation, needsIP && !lspExist, nil
 }
