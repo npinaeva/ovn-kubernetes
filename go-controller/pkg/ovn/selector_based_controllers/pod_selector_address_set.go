@@ -3,7 +3,6 @@ package selector_based_controllers
 import (
 	"fmt"
 	"net"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -94,32 +93,12 @@ func NewPodAddressSetController(controllerName string, addressSetFactory address
 // psAddrSetHashV4, psAddrSetHashV6 may be set to empty string if address set for that ipFamily wasn't created.
 func (c *PodAddressSetController) EnsureAddressSet(podSelector, namespaceSelector *metav1.LabelSelector,
 	namespace, backRef string) (addrSetKey, psAddrSetHashV4, psAddrSetHashV6 string, err error) {
-	if podSelector == nil {
-		err = fmt.Errorf("pod selector is nil")
+	podSel, nsSel, err := verifyNamespacedObjSelectors(podSelector, namespaceSelector, namespace)
+	if err != nil {
+		err = fmt.Errorf("failed to parse pod selector: %w", err)
 		return
-	}
-	if namespaceSelector == nil && namespace == "" {
-		err = fmt.Errorf("namespace selector is nil and namespace is empty")
-		return
-	}
-	if namespaceSelector != nil {
-		// namespace will be ignored in this case
-		namespace = ""
-	}
-	var nsSel, podSel labels.Selector
-	if namespaceSelector != nil {
-		nsSel, err = metav1.LabelSelectorAsSelector(namespaceSelector)
-		if err != nil {
-			err = fmt.Errorf("can't parse namespace selector %v: %w", namespaceSelector, err)
-			return
-		}
 	}
 
-	podSel, err = metav1.LabelSelectorAsSelector(podSelector)
-	if err != nil {
-		err = fmt.Errorf("can't parse pod selector %v: %w", podSelector, err)
-		return
-	}
 	addrSetKey = GetPodSelectorKey(podSelector, namespaceSelector, namespace)
 	err = c.podSelectorAddressSets.DoWithLock(addrSetKey, func(key string) error {
 		psAddrSet, found := c.podSelectorAddressSets.Load(key)
@@ -160,9 +139,6 @@ func (c *PodAddressSetController) EnsureAddressSet(podSelector, namespaceSelecto
 		psAddrSetHashV4, psAddrSetHashV6 = psAddrSet.handlerResources.addressSet.GetASHashNames()
 		return nil
 	})
-	if err != nil {
-		return
-	}
 	return
 }
 
@@ -268,7 +244,7 @@ func (psas *PodSelectorAddressSet) destroy(c *PodAddressSetController) error {
 // namespace = "" means all namespaces
 // podSelector = nil means all pods
 func (c *PodAddressSetController) addPodSelectorHandler(handlerInfo *PodSelectorAddrSetHandlerInfo, podSelector labels.Selector, namespace string) (int, error) {
-	podHandler := newPodHandler(handlerInfo, c)
+	podHandler := newPodHandlerAddrSet(handlerInfo, c)
 
 	idx, err := c.podSelectorHandler.AddHandler(namespace, podSelector, podHandler)
 	if err != nil {
@@ -284,7 +260,7 @@ func (c *PodAddressSetController) addNamespaceSelectorHandler(handlerInfo *PodSe
 	// start watching namespaces selected by the namespace selector nsSel;
 	// upon namespace add event, start watching pods in that namespace selected
 	// by the label selector podSel
-	nsHandler := newNamespaceHandler(handlerInfo, c)
+	nsHandler := newNamespaceHandlerAddrSet(handlerInfo, c)
 
 	idx, err := c.namespaceSelectorHandler.AddHandler("", namespaceSelector, nsHandler)
 	if err != nil {
@@ -294,10 +270,10 @@ func (c *PodAddressSetController) addNamespaceSelectorHandler(handlerInfo *PodSe
 }
 
 type PodSelectorAddrSetHandlerInfo struct {
-	// resources updated by podHandler
+	// resources updated by podHandlerAddrSet
 	addressSet addressset.AddressSet
 	// namespaced pod handlers, the only type of handler that can be dynamically deleted without deleting the whole
-	// PodSelectorAddressSet. When namespace is deleted, podHandler for that namespace should be deleted too.
+	// PodSelectorAddressSet. When namespace is deleted, podHandlerAddrSet for that namespace should be deleted too.
 	// Can be used by multiple namespace handlers in parallel for different keys
 	// namespace(string): handlerIdx
 	namespacedPodHandlerIdxs sync.Map
@@ -363,7 +339,7 @@ func (handlerInfo *PodSelectorAddrSetHandlerInfo) deletePod(pod *v1.Pod) error {
 
 // handlePodAddUpdate adds the IP address of a pod that has been
 // selected by PodSelectorAddressSet.
-func handlePodAddUpdate(podHandlerInfo *PodSelectorAddrSetHandlerInfo, objs ...interface{}) error {
+func (c *PodAddressSetController) handlePodAddUpdate(podHandlerInfo *PodSelectorAddrSetHandlerInfo, objs ...interface{}) error {
 	if config.Metrics.EnableScaleMetrics {
 		start := time.Now()
 		defer func() {
@@ -543,51 +519,51 @@ func (c *PodAddressSetController) handleNamespaceDel(podHandlerInfo *PodSelector
 	return kerrorsutil.NewAggregate(errs)
 }
 
-type podHandler struct {
+type podHandlerAddrSet struct {
 	controller  *PodAddressSetController
 	handlerInfo *PodSelectorAddrSetHandlerInfo
 }
 
-func newPodHandler(handlerInfo *PodSelectorAddrSetHandlerInfo,
-	controller *PodAddressSetController) *podHandler {
-	return &podHandler{
+func newPodHandlerAddrSet(handlerInfo *PodSelectorAddrSetHandlerInfo,
+	controller *PodAddressSetController) *podHandlerAddrSet {
+	return &podHandlerAddrSet{
 		controller:  controller,
 		handlerInfo: handlerInfo,
 	}
 }
 
-func (handlerInfo *podHandler) ProcessExisting(objs []interface{}) error {
+func (handlerInfo *podHandlerAddrSet) ProcessExisting(objs []interface{}) error {
 	// ignore returned error, since any pod that wasn't properly handled will be retried individually.
-	_ = handlePodAddUpdate(handlerInfo.handlerInfo, objs...)
+	_ = handlerInfo.controller.handlePodAddUpdate(handlerInfo.handlerInfo, objs...)
 	return nil
 }
 
-func (handlerInfo *podHandler) OnAdd(obj interface{}) error {
-	return handlePodAddUpdate(handlerInfo.handlerInfo, obj)
+func (handlerInfo *podHandlerAddrSet) OnAdd(obj interface{}) error {
+	return handlerInfo.controller.handlePodAddUpdate(handlerInfo.handlerInfo, obj)
 }
 
-func (handlerInfo *podHandler) OnUpdate(oldObj, newObj interface{}) error {
-	return handlePodAddUpdate(handlerInfo.handlerInfo, newObj)
+func (handlerInfo *podHandlerAddrSet) OnUpdate(oldObj, newObj interface{}) error {
+	return handlerInfo.controller.handlePodAddUpdate(handlerInfo.handlerInfo, newObj)
 }
 
-func (handlerInfo *podHandler) OnDelete(obj interface{}) error {
+func (handlerInfo *podHandlerAddrSet) OnDelete(obj interface{}) error {
 	return handlerInfo.controller.handlePodDelete(handlerInfo.handlerInfo, obj)
 }
 
-type namespaceHandler struct {
+type namespaceHandlerAddrSet struct {
 	controller  *PodAddressSetController
 	handlerInfo *PodSelectorAddrSetHandlerInfo
 }
 
-func newNamespaceHandler(handlerInfo *PodSelectorAddrSetHandlerInfo,
-	controller *PodAddressSetController) *namespaceHandler {
-	return &namespaceHandler{
+func newNamespaceHandlerAddrSet(handlerInfo *PodSelectorAddrSetHandlerInfo,
+	controller *PodAddressSetController) *namespaceHandlerAddrSet {
+	return &namespaceHandlerAddrSet{
 		controller:  controller,
 		handlerInfo: handlerInfo,
 	}
 }
 
-func (handlerInfo *namespaceHandler) ProcessExisting(objs []interface{}) error {
+func (handlerInfo *namespaceHandlerAddrSet) ProcessExisting(objs []interface{}) error {
 	for _, obj := range objs {
 		err := handlerInfo.controller.handleNamespaceAdd(handlerInfo.handlerInfo, obj)
 		if err != nil {
@@ -597,16 +573,16 @@ func (handlerInfo *namespaceHandler) ProcessExisting(objs []interface{}) error {
 	return nil
 }
 
-func (handlerInfo *namespaceHandler) OnAdd(obj interface{}) error {
+func (handlerInfo *namespaceHandlerAddrSet) OnAdd(obj interface{}) error {
 	return handlerInfo.controller.handleNamespaceAdd(handlerInfo.handlerInfo, obj)
 }
 
-func (handlerInfo *namespaceHandler) OnUpdate(oldObj, newObj interface{}) error {
+func (handlerInfo *namespaceHandlerAddrSet) OnUpdate(oldObj, newObj interface{}) error {
 	// no update
 	return nil
 }
 
-func (handlerInfo *namespaceHandler) OnDelete(obj interface{}) error {
+func (handlerInfo *namespaceHandlerAddrSet) OnDelete(obj interface{}) error {
 	return handlerInfo.controller.handleNamespaceDel(handlerInfo.handlerInfo, obj)
 }
 
@@ -615,81 +591,6 @@ func GetPodSelectorAddrSetDbIDs(psasKey, controller string) *libovsdbops.DbObjec
 		// pod selector address sets are cluster-scoped, only need name
 		libovsdbops.ObjectNameKey: psasKey,
 	})
-}
-
-// sortedLSRString is based on *LabelSelectorRequirement.String(),
-// but adds sorting for Values
-func sortedLSRString(lsr *metav1.LabelSelectorRequirement) string {
-	if lsr == nil {
-		return "nil"
-	}
-	lsrValues := make([]string, 0, len(lsr.Values))
-	lsrValues = append(lsrValues, lsr.Values...)
-	sort.Strings(lsrValues)
-	s := strings.Join([]string{`LSR{`,
-		`Key:` + fmt.Sprintf("%v", lsr.Key) + `,`,
-		`Operator:` + fmt.Sprintf("%v", lsr.Operator) + `,`,
-		`Values:` + fmt.Sprintf("%v", lsrValues) + `,`,
-		`}`,
-	}, "")
-	return s
-}
-
-// shortLabelSelectorString is based on *LabelSelector.String(),
-// but makes sure to generate the same string for equivalent selectors (by additional sorting).
-// It also tries to reduce return string length, since this string will be put to the db ad ExternalID.
-func shortLabelSelectorString(sel *metav1.LabelSelector) string {
-	if sel == nil {
-		return "nil"
-	}
-	var repeatedStringForMatchExpressions, mapStringForMatchLabels string
-	if len(sel.MatchExpressions) > 0 {
-		repeatedStringForMatchExpressions = "ME:{"
-		matchExpressions := make([]string, 0, len(sel.MatchExpressions))
-		for _, f := range sel.MatchExpressions {
-			matchExpressions = append(matchExpressions, sortedLSRString(&f))
-		}
-		// sort match expressions to not depend on MatchExpressions order
-		sort.Strings(matchExpressions)
-		repeatedStringForMatchExpressions += strings.Join(matchExpressions, ",")
-		repeatedStringForMatchExpressions += "}"
-	} else {
-		repeatedStringForMatchExpressions = ""
-	}
-	keysForMatchLabels := make([]string, 0, len(sel.MatchLabels))
-	for k := range sel.MatchLabels {
-		keysForMatchLabels = append(keysForMatchLabels, k)
-	}
-	sort.Strings(keysForMatchLabels)
-	if len(keysForMatchLabels) > 0 {
-		mapStringForMatchLabels = "ML:{"
-		for _, k := range keysForMatchLabels {
-			mapStringForMatchLabels += fmt.Sprintf("%v: %v,", k, sel.MatchLabels[k])
-		}
-		mapStringForMatchLabels += "}"
-	} else {
-		mapStringForMatchLabels = ""
-	}
-	s := "LS{"
-	if mapStringForMatchLabels != "" {
-		s += mapStringForMatchLabels + ","
-	}
-	if repeatedStringForMatchExpressions != "" {
-		s += repeatedStringForMatchExpressions + ","
-	}
-	s += "}"
-	return s
-}
-
-func GetPodSelectorKey(podSelector, namespaceSelector *metav1.LabelSelector, namespace string) string {
-	var namespaceKey string
-	if namespaceSelector == nil {
-		// namespace is static
-		namespaceKey = namespace
-	} else {
-		namespaceKey = shortLabelSelectorString(namespaceSelector)
-	}
-	return namespaceKey + "_" + shortLabelSelectorString(podSelector)
 }
 
 func CleanupPodSelectorAddressSets(nbClient libovsdbclient.Client, controllerName string) error {
