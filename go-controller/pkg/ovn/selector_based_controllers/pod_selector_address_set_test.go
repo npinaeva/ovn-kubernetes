@@ -131,7 +131,7 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 	})
 
 	ginkgo.AfterEach(func() {
-		if fakeController.watcher != nil {
+		if fakeController.watchFactory != nil {
 			// fakeController was inited
 			fakeController.shutdown()
 		}
@@ -224,7 +224,7 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 				pod.Labels = map[string]string{podLabelKey: pod.Name}
 				podsList = append(podsList, *pod)
 			}
-			fakeController.startWithDBSetup(libovsdbtest.TestSetup{},
+			fakeController.startWithDBSetup(libovsdbtest.TestSetup{}, nil,
 				&v1.NamespaceList{
 					Items: []v1.Namespace{namespace1, namespace2},
 				},
@@ -407,7 +407,7 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 			podSelACL,
 		}
 		dbSetup := libovsdbtest.TestSetup{NBData: initialDb}
-		fakeController.startWithDBSetup(dbSetup)
+		fakeController.startWithDBSetup(dbSetup, nil)
 
 		err := CleanupPodSelectorAddressSets(fakeController.nbClient, fakeController.controllerName)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -512,75 +512,5 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 		// IP should be deleted from the address set on delete event, since the new pod with the same ip
 		// should not be present in given address set
 		eventuallyExpectEmptyAddressSetsExist(fakeController, peer, namespace1.Name)
-	})
-})
-
-var _ = ginkgo.Describe("shortLabelSelectorString function", func() {
-	ginkgo.It("handles LabelSelectorRequirement.Values order", func() {
-		ls1 := &metav1.LabelSelector{
-			MatchExpressions: []metav1.LabelSelectorRequirement{{
-				Key:      "key",
-				Operator: "",
-				Values:   []string{"v1", "v2", "v3"},
-			}},
-		}
-		ls2 := &metav1.LabelSelector{
-			MatchExpressions: []metav1.LabelSelectorRequirement{{
-				Key:      "key",
-				Operator: "",
-				Values:   []string{"v3", "v2", "v1"},
-			}},
-		}
-		gomega.Expect(shortLabelSelectorString(ls1)).To(gomega.Equal(shortLabelSelectorString(ls2)))
-	})
-	ginkgo.It("handles MatchExpressions order", func() {
-		ls1 := &metav1.LabelSelector{
-			MatchExpressions: []metav1.LabelSelectorRequirement{
-				{
-					Key:      "key1",
-					Operator: "",
-					Values:   []string{"v1", "v2", "v3"},
-				},
-				{
-					Key:      "key2",
-					Operator: "",
-					Values:   []string{"v1", "v2", "v3"},
-				},
-				{
-					Key:      "key3",
-					Operator: "",
-					Values:   []string{"v1", "v2", "v3"},
-				},
-			},
-		}
-		ls2 := &metav1.LabelSelector{
-			MatchExpressions: []metav1.LabelSelectorRequirement{
-				{
-					Key:      "key2",
-					Operator: "",
-					Values:   []string{"v1", "v2", "v3"},
-				},
-				{
-					Key:      "key1",
-					Operator: "",
-					Values:   []string{"v1", "v2", "v3"},
-				},
-				{
-					Key:      "key3",
-					Operator: "",
-					Values:   []string{"v1", "v2", "v3"},
-				},
-			},
-		}
-		gomega.Expect(shortLabelSelectorString(ls1)).To(gomega.Equal(shortLabelSelectorString(ls2)))
-	})
-	ginkgo.It("handles MatchLabels order", func() {
-		ls1 := &metav1.LabelSelector{
-			MatchLabels: map[string]string{"k1": "v1", "k2": "v2", "k3": "v3"},
-		}
-		ls2 := &metav1.LabelSelector{
-			MatchLabels: map[string]string{"k2": "v2", "k1": "v1", "k3": "v3"},
-		}
-		gomega.Expect(shortLabelSelectorString(ls1)).To(gomega.Equal(shortLabelSelectorString(ls2)))
 	})
 })

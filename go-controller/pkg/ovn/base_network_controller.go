@@ -124,6 +124,7 @@ type BaseNetworkController struct {
 	netpolSharedPGController *NetpolSharedPortGroupsController
 
 	podAddressSetController *selector_based_controllers.PodAddressSetController
+	podPortGroupController  *selector_based_controllers.PodPortGroupController
 
 	// stopChan per controller
 	stopChan chan struct{}
@@ -203,6 +204,11 @@ func (bnc *BaseNetworkController) initSelectorBasedHandlers() {
 		bnc.watchFactory, bnc.stopChan, bnc.wg)
 	bnc.podAddressSetController = selector_based_controllers.NewPodAddressSetController(bnc.controllerName,
 		bnc.addressSetFactory, bnc.watchFactory, bnc.NetInfo, bnc.podSelectorHandler, bnc.namespaceSelectorHandler)
+	bnc.podPortGroupController = selector_based_controllers.NewPodPortGroupController(bnc.controllerName,
+		bnc.nbClient, bnc.watchFactory, bnc.podExtraHandlers, bnc.namespaceSelectorHandler)
+	bnc.netpolSharedPGController = NewNetpolSharedPortGroupController(bnc.nbClient, bnc.controllerName, bnc.AddConfigDurationRecord,
+		bnc.podPortGroupController)
+
 }
 
 func (bnc *BaseNetworkController) StartSelectorBasedHandlers() error {

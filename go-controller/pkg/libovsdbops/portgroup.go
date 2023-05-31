@@ -49,6 +49,29 @@ func BuildPortGroup(pgIDs *DbObjectIDs, ports []*nbdb.LogicalSwitchPort, acls []
 	return &pg
 }
 
+func CreatePortGroups(nbClient libovsdbclient.Client, pgs ...*nbdb.PortGroup) error {
+	opModels := make([]operationModel, 0, len(pgs))
+	for i := range pgs {
+		pg := pgs[i]
+		opModel := operationModel{
+			Model:          pg,
+			OnModelUpdates: onModelUpdatesNone(),
+			ErrNotFound:    false,
+			BulkOp:         false,
+		}
+		opModels = append(opModels, opModel)
+	}
+
+	m := newModelClient(nbClient)
+	ops, err := m.CreateOrUpdateOps(nil, opModels...)
+	if err != nil {
+		return err
+	}
+
+	_, err = TransactAndCheck(nbClient, ops)
+	return err
+}
+
 // CreateOrUpdatePortGroupsOps creates or updates the provided port groups
 // returning the corresponding ops
 func CreateOrUpdatePortGroupsOps(nbClient libovsdbclient.Client, ops []libovsdb.Operation, pgs ...*nbdb.PortGroup) ([]libovsdb.Operation, error) {
@@ -122,6 +145,29 @@ func AddPortsToPortGroupOps(nbClient libovsdbclient.Client, ops []libovsdb.Opera
 // AddPortsToPortGroup adds the provided ports to the provided port group
 func AddPortsToPortGroup(nbClient libovsdbclient.Client, name string, ports ...string) error {
 	ops, err := AddPortsToPortGroupOps(nbClient, nil, name, ports...)
+	if err != nil {
+		return err
+	}
+
+	_, err = TransactAndCheck(nbClient, ops)
+	return err
+}
+
+func UpdatePortGroupPorts(nbClient libovsdbclient.Client, name string, ports ...string) error {
+	pg := nbdb.PortGroup{
+		Name:  name,
+		Ports: ports,
+	}
+
+	opModel := operationModel{
+		Model:          &pg,
+		OnModelUpdates: []interface{}{&pg.Ports},
+		ErrNotFound:    true,
+		BulkOp:         false,
+	}
+
+	m := newModelClient(nbClient)
+	ops, err := m.CreateOrUpdateOps(nil, opModel)
 	if err != nil {
 		return err
 	}

@@ -1,5 +1,7 @@
 package libovsdbops
 
+import "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
+
 const (
 	addressSet dbObjType = iota
 	acl
@@ -24,6 +26,7 @@ const (
 	MulticastClusterOwnerType   ownerType = "MulticastCluster"
 	NetpolNodeOwnerType         ownerType = "NetpolNode"
 	NetpolNamespaceOwnerType    ownerType = "NetpolNamespace"
+	NetpolSharedPGOwnerType     ownerType = "NetpolSharedPG"
 	GlobalOwnerType             ownerType = "Global"
 
 	// owner extra IDs, make sure to define only 1 ExternalIDKey for every string value
@@ -36,6 +39,7 @@ const (
 	PortPolicyIndexKey    ExternalIDKey = "port-policy-index"
 	IpBlockIndexKey       ExternalIDKey = "ip-block-index"
 	RuleIndex             ExternalIDKey = "rule-index"
+	PortGroupName         ExternalIDKey = types.OvnK8sPrefix + "/port-group-name"
 )
 
 // ObjectIDsTypes should only be created here
@@ -153,6 +157,15 @@ var ACLNetpolNamespace = newObjectIDsType(acl, NetpolNamespaceOwnerType, []Exter
 	TypeKey,
 })
 
+var ACLNetpolSharedPG = newObjectIDsType(acl, NetpolSharedPGOwnerType, []ExternalIDKey{
+	// shared port group Name
+	ObjectNameKey,
+	// in the same namespace there can be 2 default deny port groups, egress and ingress
+	PolicyDirectionKey,
+	// every port group has default deny and arp allow acl.
+	TypeKey,
+})
+
 var ACLEgressFirewall = newObjectIDsType(acl, EgressFirewallOwnerType, []ExternalIDKey{
 	// namespace
 	ObjectNameKey,
@@ -181,5 +194,10 @@ var PortGroupNetworkPolicy = newObjectIDsType(portGroup, NetworkPolicyOwnerType,
 var PortGroupCluster = newObjectIDsType(portGroup, GlobalOwnerType, []ExternalIDKey{
 	// name of a global port group
 	// currently ClusterPortGroup and ClusterRtrPortGroup are present
+	ObjectNameKey,
+})
+
+var PortGroupPodSelector = newObjectIDsType(portGroup, PodSelectorOwnerType, []ExternalIDKey{
+	// pod selector string representation
 	ObjectNameKey,
 })

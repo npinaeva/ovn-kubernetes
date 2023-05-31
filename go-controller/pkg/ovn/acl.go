@@ -61,6 +61,7 @@ func aclDirectionToACLPipeline(aclDir aclDirection) aclPipelineType {
 // Just a namespace name may be 63 symbols long, therefore some information may be cropped.
 // Therefore, "feature" as "EF" for EgressFirewall and "NP" for network policy goes first, then namespace,
 // then acl-related info.
+// TODO update netpol acl logging
 func getACLName(dbIDs *libovsdbops.DbObjectIDs) string {
 	t := dbIDs.GetIDsType()
 	aclName := ""

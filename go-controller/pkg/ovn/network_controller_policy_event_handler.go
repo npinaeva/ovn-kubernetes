@@ -6,9 +6,6 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
-
-	kapi "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -22,8 +19,7 @@ import (
 // and resource-specific extra parameters (used now for network-policy-dependant types).
 // newNetpolRetryFramework is also called directly by the watchers that are
 // dynamically created when a network policy is added:
-// AddressSetNamespaceAndPodSelectorType, AddressSetPodSelectorType, PeerNamespaceSelectorType,
-// LocalPodSelectorType,
+// PeerNamespaceSelectorType
 func (bnc *BaseNetworkController) newNetpolRetryFramework(
 	objectType reflect.Type,
 	syncFunc func([]interface{}) error,
@@ -63,18 +59,15 @@ type networkControllerPolicyEventHandler struct {
 // from the informers cache.
 func (h *networkControllerPolicyEventHandler) GetResourceFromInformerCache(key string) (interface{}, error) {
 	var obj interface{}
-	var namespace, name string
+	var name string
 	var err error
 
-	namespace, name, err = cache.SplitMetaNamespaceKey(key)
+	_, name, err = cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to split key %s: %v", key, err)
 	}
 
 	switch h.objType {
-	case factory.LocalPodSelectorType:
-		obj, err = h.watchFactory.GetPod(namespace, name)
-
 	case factory.PeerNamespaceSelectorType:
 		obj, err = h.watchFactory.GetNamespace(name)
 
@@ -94,12 +87,6 @@ func (h *networkControllerPolicyEventHandler) AddResource(obj interface{}, fromR
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
 		return h.bnc.handlePeerNamespaceSelectorAdd(extraParameters.np, extraParameters.gp, obj)
 
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.bnc.handleLocalPodSelectorAddFunc(
-			extraParameters.np,
-			obj)
-
 	default:
 		return fmt.Errorf("no add function for object type %s", h.objType)
 	}
@@ -110,13 +97,6 @@ func (h *networkControllerPolicyEventHandler) AddResource(obj interface{}, fromR
 // Given an old and a new object; The inRetryCache boolean argument is to indicate if the given resource
 // is in the retryCache or not.
 func (h *networkControllerPolicyEventHandler) UpdateResource(oldObj, newObj interface{}, inRetryCache bool) error {
-	switch h.objType {
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.bnc.handleLocalPodSelectorAddFunc(
-			extraParameters.np,
-			newObj)
-	}
 	return fmt.Errorf("no update function for object type %s", h.objType)
 }
 
@@ -128,49 +108,7 @@ func (h *networkControllerPolicyEventHandler) DeleteResource(obj, cachedObj inte
 	case factory.PeerNamespaceSelectorType:
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
 		return h.bnc.handlePeerNamespaceSelectorDel(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.bnc.handleLocalPodSelectorDelFunc(
-			extraParameters.np,
-			obj)
-
 	default:
 		return fmt.Errorf("object type %s not supported", h.objType)
-	}
-}
-
-func (h *networkControllerPolicyEventHandler) SyncFunc(objs []interface{}) error {
-	var syncFunc func([]interface{}) error
-
-	if h.syncFunc != nil {
-		// syncFunc was provided explicitly
-		syncFunc = h.syncFunc
-	} else {
-		switch h.objType {
-		case factory.LocalPodSelectorType,
-			factory.PeerNamespaceSelectorType:
-			syncFunc = nil
-
-		default:
-			return fmt.Errorf("no sync function for object type %s", h.objType)
-		}
-	}
-	if syncFunc == nil {
-		return nil
-	}
-	return syncFunc(objs)
-}
-
-// IsObjectInTerminalState returns true if the given object is a in terminal state.
-// This is used now for pods that are either in a PodSucceeded or in a PodFailed state.
-func (h *networkControllerPolicyEventHandler) IsObjectInTerminalState(obj interface{}) bool {
-	switch h.objType {
-	case factory.LocalPodSelectorType:
-		pod := obj.(*kapi.Pod)
-		return util.PodCompleted(pod)
-
-	default:
-		return false
 	}
 }

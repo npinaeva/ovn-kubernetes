@@ -165,6 +165,7 @@ func (c *PodAddressSetController) DeleteAddressSet(addrSetKey, backRef string) e
 func (psas *PodSelectorAddressSet) init(c *PodAddressSetController) error {
 	// create pod handler resources before starting the handlers
 	if psas.handlerResources == nil {
+		// TODO consider ensure with update on initial sync
 		as, err := c.addressSetFactory.NewAddressSet(psas.addrSetDbIDs, nil)
 		if err != nil {
 			return err
