@@ -86,11 +86,17 @@ func getFakeBaseController(netInfo util.NetInfo) *BaseNetworkController {
 	}
 }
 
+func getFakeSharedPGController(netInfo util.NetInfo) *NetpolSharedPortGroupsController {
+	return &NetpolSharedPortGroupsController{
+		controllerName: netInfo.GetNetworkName() + "-network-controller",
+	}
+}
+
 // getDefaultDenyData builds namespace-owned port groups, considering the same ports are selected for ingress
 // and egress
 func getDefaultDenyDataHelper(namespace string, policyTypeIngress, policyTypeEgress bool, ports []string,
 	denyLogSeverity nbdb.ACLSeverity, staleNetpolName string, netInfo util.NetInfo) []libovsdb.TestData {
-	fakeController := getFakeBaseController(netInfo)
+	fakeController := getFakeSharedPGController(netInfo)
 	egressPGName := fakeController.defaultDenyPortGroupName(namespace, aclEgress)
 	shouldBeLogged := denyLogSeverity != ""
 	aclIDs := fakeController.getDefaultDenyPolicyACLIDs(namespace, aclEgress, defaultDenyACL)
@@ -1739,7 +1745,8 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 				ginkgo.By("Simulate the initial re-add of all network policies during upgrade and ensure we are stable")
 				// pretend controller didn't see this netpol object, all related db rows are still present
 				fakeOvn.controller.networkPolicies.Delete(getPolicyKey(networkPolicy1))
-				fakeOvn.controller.sharedNetpolPortGroups.Delete(networkPolicy1.Namespace)
+				// if netpolSharedPGController ever moves to another package, it may require an exported function for this hack
+				fakeOvn.controller.netpolSharedPGController.sharedNetpolPortGroups.Delete(networkPolicy1.Namespace)
 				err := fakeOvn.controller.addNetworkPolicy(networkPolicy1)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				return nil

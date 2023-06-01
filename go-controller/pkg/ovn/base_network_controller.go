@@ -116,16 +116,10 @@ type BaseNetworkController struct {
 	// network policies map, key should be retrieved with getPolicyKey(policy *knet.NetworkPolicy).
 	// network policies that failed to be created will also be added here, and can be retried or cleaned up later.
 	// network policy is only deleted from this map after successful cleanup.
-	// Allowed order of locking is namespace Lock -> oc.networkPolicies key Lock -> networkPolicy.Lock
-	// Don't take namespace Lock while holding networkPolicy key lock to avoid deadlock.
+	// Allowed order of locking is oc.networkPolicies key Lock -> networkPolicy.Lock
 	networkPolicies *syncmap.SyncMap[*networkPolicy]
 
-	// map of existing shared port groups for network policies
-	// port group exists in the db if and only if port group key is present in this map
-	// key is namespace
-	// allowed locking order is namespace Lock -> networkPolicy.Lock -> sharedNetpolPortGroups key Lock
-	// make sure to keep this order to avoid deadlocks
-	sharedNetpolPortGroups *syncmap.SyncMap[*defaultDenyPortGroups]
+	netpolSharedPGController *NetpolSharedPortGroupsController
 
 	podSelectorAddressSets *syncmap.SyncMap[*PodSelectorAddressSet]
 
@@ -152,7 +146,6 @@ func NewBaseNetworkController(cnci *CommonNetworkControllerInfo, addressSetFacto
 		namespacesMutex:             sync.Mutex{},
 		addressSetFactory:           addressSetFactory,
 		networkPolicies:             syncmap.NewSyncMap[*networkPolicy](),
-		sharedNetpolPortGroups:      syncmap.NewSyncMap[*defaultDenyPortGroups](),
 		podSelectorAddressSets:      syncmap.NewSyncMap[*PodSelectorAddressSet](),
 		stopChan:                    stopChan,
 		wg:                          wg,
@@ -160,6 +153,7 @@ func NewBaseNetworkController(cnci *CommonNetworkControllerInfo, addressSetFacto
 	if initiLocalZoneNodes {
 		c.localZoneNodes = &sync.Map{}
 	}
+	c.netpolSharedPGController = NewNetpolSharedPortGroupController(c.nbClient, c.controllerName, c.AddConfigDurationRecord)
 	return c
 }
 
