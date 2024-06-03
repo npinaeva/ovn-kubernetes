@@ -74,7 +74,7 @@ func (d *SampleDecoder) DecodeCookieIDs(obsDomainID, obsPointID uint32) (string,
 	if len(acls) == 0 {
 		return "", fmt.Errorf("no ACLs found")
 	}
-	return libovsdbops.GetACLName(acls[0]), nil
+	return acls[0].UUID, nil
 }
 
 func (d *SampleDecoder) DecodeCookieBytes(cookie []byte) (string, error) {
