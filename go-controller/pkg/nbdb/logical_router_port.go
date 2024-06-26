@@ -10,6 +10,7 @@ const LogicalRouterPortTable = "Logical_Router_Port"
 // LogicalRouterPort defines an object in Logical_Router_Port table
 type LogicalRouterPort struct {
 	UUID           string            `ovsdb:"_uuid"`
+	DhcpRelay      *string           `ovsdb:"dhcp_relay"`
 	Enabled        *bool             `ovsdb:"enabled"`
 	ExternalIDs    map[string]string `ovsdb:"external_ids"`
 	GatewayChassis []string          `ovsdb:"gateway_chassis"`
@@ -21,10 +22,33 @@ type LogicalRouterPort struct {
 	Networks       []string          `ovsdb:"networks"`
 	Options        map[string]string `ovsdb:"options"`
 	Peer           *string           `ovsdb:"peer"`
+	Status         map[string]string `ovsdb:"status"`
 }
 
 func (a *LogicalRouterPort) GetUUID() string {
 	return a.UUID
+}
+
+func (a *LogicalRouterPort) GetDhcpRelay() *string {
+	return a.DhcpRelay
+}
+
+func copyLogicalRouterPortDhcpRelay(a *string) *string {
+	if a == nil {
+		return nil
+	}
+	b := *a
+	return &b
+}
+
+func equalLogicalRouterPortDhcpRelay(a, b *string) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	return *a == *b
 }
 
 func (a *LogicalRouterPort) GetEnabled() *bool {
@@ -275,8 +299,39 @@ func equalLogicalRouterPortPeer(a, b *string) bool {
 	return *a == *b
 }
 
+func (a *LogicalRouterPort) GetStatus() map[string]string {
+	return a.Status
+}
+
+func copyLogicalRouterPortStatus(a map[string]string) map[string]string {
+	if a == nil {
+		return nil
+	}
+	b := make(map[string]string, len(a))
+	for k, v := range a {
+		b[k] = v
+	}
+	return b
+}
+
+func equalLogicalRouterPortStatus(a, b map[string]string) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || v != w {
+			return false
+		}
+	}
+	return true
+}
+
 func (a *LogicalRouterPort) DeepCopyInto(b *LogicalRouterPort) {
 	*b = *a
+	b.DhcpRelay = copyLogicalRouterPortDhcpRelay(a.DhcpRelay)
 	b.Enabled = copyLogicalRouterPortEnabled(a.Enabled)
 	b.ExternalIDs = copyLogicalRouterPortExternalIDs(a.ExternalIDs)
 	b.GatewayChassis = copyLogicalRouterPortGatewayChassis(a.GatewayChassis)
@@ -286,6 +341,7 @@ func (a *LogicalRouterPort) DeepCopyInto(b *LogicalRouterPort) {
 	b.Networks = copyLogicalRouterPortNetworks(a.Networks)
 	b.Options = copyLogicalRouterPortOptions(a.Options)
 	b.Peer = copyLogicalRouterPortPeer(a.Peer)
+	b.Status = copyLogicalRouterPortStatus(a.Status)
 }
 
 func (a *LogicalRouterPort) DeepCopy() *LogicalRouterPort {
@@ -305,6 +361,7 @@ func (a *LogicalRouterPort) CloneModel() model.Model {
 
 func (a *LogicalRouterPort) Equals(b *LogicalRouterPort) bool {
 	return a.UUID == b.UUID &&
+		equalLogicalRouterPortDhcpRelay(a.DhcpRelay, b.DhcpRelay) &&
 		equalLogicalRouterPortEnabled(a.Enabled, b.Enabled) &&
 		equalLogicalRouterPortExternalIDs(a.ExternalIDs, b.ExternalIDs) &&
 		equalLogicalRouterPortGatewayChassis(a.GatewayChassis, b.GatewayChassis) &&
@@ -315,7 +372,8 @@ func (a *LogicalRouterPort) Equals(b *LogicalRouterPort) bool {
 		a.Name == b.Name &&
 		equalLogicalRouterPortNetworks(a.Networks, b.Networks) &&
 		equalLogicalRouterPortOptions(a.Options, b.Options) &&
-		equalLogicalRouterPortPeer(a.Peer, b.Peer)
+		equalLogicalRouterPortPeer(a.Peer, b.Peer) &&
+		equalLogicalRouterPortStatus(a.Status, b.Status)
 }
 
 func (a *LogicalRouterPort) EqualsModel(b model.Model) bool {

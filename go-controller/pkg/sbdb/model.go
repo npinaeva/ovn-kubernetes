@@ -52,7 +52,7 @@ func FullDatabaseModel() (model.ClientDBModel, error) {
 
 var schema = `{
   "name": "OVN_Southbound",
-  "version": "20.27.2",
+  "version": "20.34.0",
   "tables": {
     "Address_Set": {
       "columns": {
@@ -73,11 +73,13 @@ var schema = `{
         [
           "name"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "BFD": {
       "columns": {
+        "chassis_name": {
+          "type": "string"
+        },
         "detect_mult": {
           "type": "integer"
         },
@@ -153,8 +155,7 @@ var schema = `{
           "src_port",
           "disc"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Chassis": {
       "columns": {
@@ -224,8 +225,7 @@ var schema = `{
         [
           "name"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Chassis_Private": {
       "columns": {
@@ -266,8 +266,7 @@ var schema = `{
         [
           "name"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Chassis_Template_Var": {
       "columns": {
@@ -291,8 +290,7 @@ var schema = `{
         [
           "chassis"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Connection": {
       "columns": {
@@ -408,8 +406,7 @@ var schema = `{
         "seq_num": {
           "type": "integer"
         }
-      },
-      "isRoot": true
+      }
     },
     "DHCP_Options": {
       "columns": {
@@ -446,8 +443,7 @@ var schema = `{
             }
           }
         }
-      },
-      "isRoot": true
+      }
     },
     "DHCPv6_Options": {
       "columns": {
@@ -472,14 +468,14 @@ var schema = `{
                 [
                   "ipv6",
                   "str",
-                  "mac"
+                  "mac",
+                  "domain"
                 ]
               ]
             }
           }
         }
-      },
-      "isRoot": true
+      }
     },
     "DNS": {
       "columns": {
@@ -505,6 +501,18 @@ var schema = `{
             "max": "unlimited"
           }
         },
+        "options": {
+          "type": {
+            "key": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            },
+            "min": 0,
+            "max": "unlimited"
+          }
+        },
         "records": {
           "type": {
             "key": {
@@ -517,8 +525,7 @@ var schema = `{
             "max": "unlimited"
           }
         }
-      },
-      "isRoot": true
+      }
     },
     "Datapath_Binding": {
       "columns": {
@@ -557,8 +564,7 @@ var schema = `{
         [
           "tunnel_key"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Encap": {
       "columns": {
@@ -625,6 +631,9 @@ var schema = `{
               "maxInteger": 16777215
             }
           }
+        },
+        "timestamp": {
+          "type": "integer"
         }
       },
       "indexes": [
@@ -632,8 +641,7 @@ var schema = `{
           "mac",
           "dp_key"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Gateway_Chassis": {
       "columns": {
@@ -771,8 +779,7 @@ var schema = `{
         [
           "name"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "IGMP_Group": {
       "columns": {
@@ -789,6 +796,9 @@ var schema = `{
             "min": 0,
             "max": 1
           }
+        },
+        "chassis_name": {
+          "type": "string"
         },
         "datapath": {
           "type": {
@@ -811,6 +821,9 @@ var schema = `{
             "min": 0,
             "max": "unlimited"
           }
+        },
+        "protocol": {
+          "type": "string"
         }
       },
       "indexes": [
@@ -819,8 +832,7 @@ var schema = `{
           "datapath",
           "chassis"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "IP_Multicast": {
       "columns": {
@@ -904,8 +916,7 @@ var schema = `{
         [
           "datapath"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Load_Balancer": {
       "columns": {
@@ -939,6 +950,26 @@ var schema = `{
             },
             "min": 0,
             "max": "unlimited"
+          }
+        },
+        "lr_datapath_group": {
+          "type": {
+            "key": {
+              "type": "uuid",
+              "refTable": "Logical_DP_Group"
+            },
+            "min": 0,
+            "max": 1
+          }
+        },
+        "ls_datapath_group": {
+          "type": {
+            "key": {
+              "type": "uuid",
+              "refTable": "Logical_DP_Group"
+            },
+            "min": 0,
+            "max": 1
           }
         },
         "name": {
@@ -985,8 +1016,7 @@ var schema = `{
             "max": "unlimited"
           }
         }
-      },
-      "isRoot": true
+      }
     },
     "Logical_DP_Group": {
       "columns": {
@@ -1096,8 +1126,7 @@ var schema = `{
             "max": "unlimited"
           }
         }
-      },
-      "isRoot": true
+      }
     },
     "MAC_Binding": {
       "columns": {
@@ -1127,8 +1156,7 @@ var schema = `{
           "logical_port",
           "ip"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Meter": {
       "columns": {
@@ -1165,8 +1193,7 @@ var schema = `{
         [
           "name"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Meter_Band": {
       "columns": {
@@ -1256,8 +1283,7 @@ var schema = `{
         [
           "name"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Multicast_Group": {
       "columns": {
@@ -1302,8 +1328,7 @@ var schema = `{
           "datapath",
           "name"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Port_Binding": {
       "columns": {
@@ -1527,8 +1552,7 @@ var schema = `{
         [
           "logical_port"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Port_Group": {
       "columns": {
@@ -1549,8 +1573,7 @@ var schema = `{
         [
           "name"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "RBAC_Permission": {
       "columns": {
@@ -1578,8 +1601,7 @@ var schema = `{
             "max": "unlimited"
           }
         }
-      },
-      "isRoot": true
+      }
     },
     "RBAC_Role": {
       "columns": {
@@ -1600,8 +1622,7 @@ var schema = `{
             "max": "unlimited"
           }
         }
-      },
-      "isRoot": true
+      }
     },
     "SB_Global": {
       "columns": {
@@ -1655,8 +1676,7 @@ var schema = `{
             "max": 1
           }
         }
-      },
-      "isRoot": true
+      }
     },
     "SSL": {
       "columns": {
@@ -1694,6 +1714,9 @@ var schema = `{
     },
     "Service_Monitor": {
       "columns": {
+        "chassis_name": {
+          "type": "string"
+        },
         "external_ids": {
           "type": {
             "key": {
@@ -1780,8 +1803,7 @@ var schema = `{
           "port",
           "protocol"
         ]
-      ],
-      "isRoot": true
+      ]
     },
     "Static_MAC_Binding": {
       "columns": {
@@ -1811,8 +1833,7 @@ var schema = `{
           "logical_port",
           "ip"
         ]
-      ],
-      "isRoot": true
+      ]
     }
   }
 }`
