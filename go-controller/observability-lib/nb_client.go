@@ -22,11 +22,9 @@ func NewNBClientWithConfig(ctx context.Context, cfg nbConfig) (client.Client, er
 
 	// define client indexes for objects that are using dbIDs
 	dbModel.SetIndexes(map[string][]model.ClientIndex{
-		nbdb.ACLTable:           {{Columns: []model.ColumnKey{{Column: "external_ids", Key: types.PrimaryIDKey}}}},
-		nbdb.DHCPOptionsTable:   {{Columns: []model.ColumnKey{{Column: "external_ids", Key: types.PrimaryIDKey}}}},
-		nbdb.LoadBalancerTable:  {{Columns: []model.ColumnKey{{Column: "name"}}}},
-		nbdb.LogicalSwitchTable: {{Columns: []model.ColumnKey{{Column: "name"}}}},
-		nbdb.LogicalRouterTable: {{Columns: []model.ColumnKey{{Column: "name"}}}},
+		nbdb.ACLTable: {
+			{Columns: []model.ColumnKey{{Column: "sample_new"}}},
+			{Columns: []model.ColumnKey{{Column: "sample_est"}}}},
 	})
 
 	c, err := newClient(cfg, dbModel)
@@ -34,20 +32,19 @@ func NewNBClientWithConfig(ctx context.Context, cfg nbConfig) (client.Client, er
 		return nil, err
 	}
 
-	//_, err = c.MonitorAll(ctx)
-
 	_, err = c.Monitor(ctx,
 		c.NewMonitor(
 			client.WithTable(&nbdb.ACL{}),
-			client.WithTable(&nbdb.LogicalSwitchPort{}),
-			client.WithTable(&nbdb.LogicalSwitch{}),
-			client.WithTable(&nbdb.LoadBalancer{}),
-			client.WithTable(&nbdb.QoS{}),
-			client.WithTable(&nbdb.LogicalRouter{}),
-			client.WithTable(&nbdb.LogicalRouterPort{}),
-			client.WithTable(&nbdb.LogicalRouterStaticRoute{}),
-			client.WithTable(&nbdb.LogicalRouterPolicy{}),
-			client.WithTable(&nbdb.NAT{}),
+			client.WithTable(&nbdb.Sample{}),
+			//client.WithTable(&nbdb.LogicalSwitchPort{}),
+			//client.WithTable(&nbdb.LogicalSwitch{}),
+			//client.WithTable(&nbdb.LoadBalancer{}),
+			//client.WithTable(&nbdb.QoS{}),
+			//client.WithTable(&nbdb.LogicalRouter{}),
+			//client.WithTable(&nbdb.LogicalRouterPort{}),
+			//client.WithTable(&nbdb.LogicalRouterStaticRoute{}),
+			//client.WithTable(&nbdb.LogicalRouterPolicy{}),
+			//client.WithTable(&nbdb.NAT{}),
 		),
 	)
 

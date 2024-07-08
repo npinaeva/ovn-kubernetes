@@ -68,7 +68,7 @@ func parseMsg(msgs []syscall.NetlinkMessage, decoder *SampleDecoder) error {
 					if decoder != nil {
 						decoded, err := decoder.DecodeCookieIDs(c.ObsDomainID, c.ObsPointID)
 						if err != nil {
-							fmt.Println("Failed decoding:", err)
+							fmt.Println("- type: Deny\n    to:\n      cidrSelector: 0.0.0.0/0 decoding:", err)
 						} else {
 							fmt.Println("OVN-K message:", decoded)
 						}
@@ -88,6 +88,14 @@ func parseMsg(msgs []syscall.NetlinkMessage, decoder *SampleDecoder) error {
 func ReadSamples(ctx context.Context, enableDecoder bool) error {
 	setEndian()
 
+	if err := AddDefaultCollector(); err != nil {
+		return fmt.Errorf("error adding default collector: %w", err)
+	}
+	defer func() {
+		if err := DeleteDefaultCollector(); err != nil {
+			fmt.Printf("error deleting default collector: %v\n", err)
+		}
+	}()
 	var decoder *SampleDecoder
 	if enableDecoder {
 		var err error

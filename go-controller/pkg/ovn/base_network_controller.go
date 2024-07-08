@@ -17,6 +17,7 @@ import (
 	libovsdbutil "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/util"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/observability"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	zoneic "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/zone_interconnect"
@@ -160,6 +161,8 @@ type BaseNetworkController struct {
 	// might have been already be released on startup
 	releasedPodsBeforeStartup  map[string]sets.Set[string]
 	releasedPodsOnStartupMutex sync.Mutex
+
+	observManager *observability.Manager
 }
 
 // BaseSecondaryNetworkController structure holds per-network fields and network specific
@@ -737,4 +740,11 @@ func (bnc *BaseNetworkController) findMigratablePodIPsForSubnets(subnets []*net.
 		}
 	}
 	return ipList, nil
+}
+
+func (bnc *BaseNetworkController) GetSamplingConfig() *libovsdbops.SamplingConfig {
+	if bnc.observManager != nil {
+		return bnc.observManager.Config()
+	}
+	return nil
 }
