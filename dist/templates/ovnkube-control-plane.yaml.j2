@@ -170,6 +170,8 @@ spec:
           value: "{{ ovn_v6_transit_switch_subnet }}"
         - name: OVN_ENABLE_PERSISTENT_IPS
           value: "{{ ovn_enable_persistent_ips }}"
+        - name: OVNKUBE_OBSERV_ENABLE
+          value: "{{ ovnkube_observ_enable }}"
       # end of container
 
       volumes:

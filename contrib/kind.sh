@@ -235,6 +235,8 @@ parse_args() {
             -ifa | --ipfix-cache-active-timeout ) shift
                                                 OVN_IPFIX_CACHE_ACTIVE_TIMEOUT=$1
                                                 ;;
+            -obs | --observability )            OVNKUBE_OBSERV_ENABLE=true
+                                                ;;
             -el | --ovn-empty-lb-events )       OVN_EMPTY_LB_EVENTS=true
                                                 ;;
             -kt | --keep-taint )                KIND_REMOVE_TAINT=false
@@ -409,6 +411,7 @@ print_params() {
      echo "OVN_IPFIX_SAMPLING = $OVN_IPFIX_SAMPLING"
      echo "OVN_IPFIX_CACHE_MAX_FLOWS = $OVN_IPFIX_CACHE_MAX_FLOWS"
      echo "OVN_IPFIX_CACHE_ACTIVE_TIMEOUT = $OVN_IPFIX_CACHE_ACTIVE_TIMEOUT"
+     echo "OVNKUBE_OBSERV_ENABLE = $OVNKUBE_OBSERV_ENABLE"
      echo "OVN_EMPTY_LB_EVENTS = $OVN_EMPTY_LB_EVENTS"
      echo "OVN_MULTICAST_ENABLE = $OVN_MULTICAST_ENABLE"
      echo "OVN_IMAGE = $OVN_IMAGE"
@@ -637,6 +640,7 @@ set_default_params() {
     KIND_NUM_WORKER=0
   fi
   OVN_MTU=${OVN_MTU:-1400}
+  OVNKUBE_OBSERV_ENABLE=${OVNKUBE_OBSERV_ENABLE:-false}
 }
 
 detect_apiserver_url() {
@@ -940,7 +944,8 @@ create_ovn_kube_manifests() {
     --enable-multi-external-gateway=true \
     --enable-ovnkube-identity="${OVN_ENABLE_OVNKUBE_IDENTITY}" \
     --enable-persistent-ips=true \
-    --mtu="${OVN_MTU}"
+    --mtu="${OVN_MTU}" \
+    --ovnkube-observ-enable="${OVNKUBE_OBSERV_ENABLE}"
   popd
 }
 

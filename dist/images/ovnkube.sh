@@ -96,6 +96,7 @@ fi
 # OVN_KUBERNETES_CONNTRACK_ZONE - Conntrack zone number used for openflow rules (default 64000)
 # OVN_NORTHD_BACKOFF_INTERVAL - ovn northd backoff interval in ms (default 300)
 # OVN_ENABLE_SVC_TEMPLATE_SUPPORT - enable svc template support
+# OVNKUBE_OBSERV_ENABLE - enable observability for ovnkube
 
 # The argument to the command is the operation to be performed
 # ovn-master ovn-controller ovn-node display display_env ovn_debug
@@ -306,6 +307,8 @@ ovnkube_compact_mode_enable=${OVNKUBE_COMPACT_MODE_ENABLE:-false}
 ovn_northd_backoff_interval=${OVN_NORTHD_BACKOFF_INTERVAL:-"300"}
 # OVN_ENABLE_SVC_TEMPLATE_SUPPORT - enable svc template support
 ovn_enable_svc_template_support=${OVN_ENABLE_SVC_TEMPLATE_SUPPORT:-true}
+# OVNKUBE_OBSERV_ENABLE - enable observability for ovnkube
+ovnkube_observ_enable=${OVNKUBE_OBSERV_ENABLE:-false}
 
 # Determine the ovn rundir.
 if [[ -f /usr/bin/ovn-appctl ]]; then
@@ -1249,6 +1252,12 @@ ovn-master() {
   fi
   echo "ovn_enable_svc_template_support_flag=${ovn_enable_svc_template_support_flag}"
 
+  ovnkube_observ_enable_flag=
+  if [[ ${ovnkube_observ_enable} == "true" ]]; then
+    ovnkube_observ_enable_flag="--enable-observability"
+  fi
+  echo "ovnkube_observ_enable_flag=${ovnkube_observ_enable_flag}"
+
   init_node_flags=
   if [[ ${ovnkube_compact_mode_enable} == "true" ]]; then
     init_node_flags="--init-node ${K8S_NODE} --nodeport"
@@ -1281,6 +1290,7 @@ ovn-master() {
     ${multi_network_enabled_flag} \
     ${ovn_acl_logging_rate_limit_flag} \
     ${ovn_enable_svc_template_support_flag} \
+    ${ovnkube_observ_enable_flag} \
     ${ovnkube_config_duration_enable_flag} \
     ${ovnkube_enable_multi_external_gateway_flag} \
     ${ovnkube_metrics_scale_enable_flag} \
@@ -1531,6 +1541,12 @@ ovnkube-controller() {
   fi
   echo "ovn_enable_svc_template_support_flag=${ovn_enable_svc_template_support_flag}"
 
+  ovnkube_observ_enable_flag=
+  if [[ ${ovnkube_observ_enable} == "true" ]]; then
+    ovnkube_observ_enable_flag="--enable-observability"
+  fi
+  echo "ovnkube_observ_enable_flag=${ovnkube_observ_enable_flag}"
+
   echo "=============== ovnkube-controller ========== MASTER ONLY"
   /usr/bin/ovnkube --init-ovnkube-controller ${K8S_NODE} \
     ${anp_enabled_flag} \
@@ -1548,6 +1564,7 @@ ovnkube-controller() {
     ${ovn_acl_logging_rate_limit_flag} \
     ${ovn_dbs} \
     ${ovn_enable_svc_template_support_flag} \
+    ${ovnkube_observ_enable_flag} \
     ${ovnkube_config_duration_enable_flag} \
     ${ovnkube_enable_interconnect_flag} \
     ${ovnkube_local_cert_flags} \
@@ -1916,6 +1933,12 @@ ovnkube-controller-with-node() {
   fi
   echo "ovn_enable_svc_template_support_flag=${ovn_enable_svc_template_support_flag}"
 
+  ovnkube_observ_enable_flag=
+  if [[ ${ovnkube_observ_enable} == "true" ]]; then
+    ovnkube_observ_enable_flag="--enable-observability"
+  fi
+  echo "ovnkube_observ_enable_flag=${ovnkube_observ_enable_flag}"
+
   echo "=============== ovnkube-controller-with-node --init-ovnkube-controller-with-node=========="
   /usr/bin/ovnkube --init-ovnkube-controller ${K8S_NODE} --init-node ${K8S_NODE} \
     ${anp_enabled_flag} \
@@ -1945,6 +1968,7 @@ ovnkube-controller-with-node() {
     ${ovn_acl_logging_rate_limit_flag} \
     ${ovn_dbs} \
     ${ovn_enable_svc_template_support_flag} \
+    ${ovnkube_observ_enable_flag} \
     ${ovn_encap_ip_flag} \
     ${ovn_encap_port_flag} \
     ${ovnkube_config_duration_enable_flag} \
