@@ -55,17 +55,18 @@ func getLocalNBClient(ctx context.Context) (client.Client, error) {
 		address: "unix:/var/run/ovn/ovnnb_db.sock",
 		scheme:  "unix",
 	}
-	libovsdbOvnNBClient, err := NewNBClientWithConfig(ctx, config)
-	if err == nil {
+	libovsdbOvnNBClient, err1 := NewNBClientWithConfig(ctx, config)
+	if err1 == nil {
 		return libovsdbOvnNBClient, nil
 	}
 	config = nbConfig{
 		address: "unix:/var/run/ovn-ic/ovnnb_db.sock",
 		scheme:  "unix",
 	}
-	libovsdbOvnNBClient, err = NewNBClientWithConfig(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("error creating libovsdb client: %w", err)
+	var err2 error
+	libovsdbOvnNBClient, err2 = NewNBClientWithConfig(ctx, config)
+	if err2 != nil {
+		return nil, fmt.Errorf("error creating libovsdb client: [ with /var/run/ovn/ovnnb_db.sock: %w, with /var/run/ovn-ic/ovnnb_db.sock: %w ]", err1, err2)
 	}
 	return libovsdbOvnNBClient, nil
 }
