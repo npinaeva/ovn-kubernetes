@@ -41,9 +41,9 @@ func setEndian() {
 
 	switch buf {
 	case [2]byte{0xCD, 0xAB}:
-		nativeEndian = binary.LittleEndian
-	case [2]byte{0xAB, 0xCD}:
 		nativeEndian = binary.BigEndian
+	case [2]byte{0xAB, 0xCD}:
+		nativeEndian = binary.LittleEndian
 	default:
 		panic("Could not determine native endianness.")
 	}
