@@ -431,8 +431,9 @@ var _ = Describe("User Defined Network Controller", func() {
 			mutetedNAD.ObjectMeta.OwnerReferences = []metav1.OwnerReference{{Kind: "DifferentKind"}}
 			mutetedNAD, err = nadClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(udn.Namespace).Create(context.Background(), mutetedNAD, metav1.CreateOptions{})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(nadInformer.Informer().GetIndexer().Add(mutetedNAD)).To(Succeed())
 
-			_, err = c.syncUserDefinedNetwork(udn, mutetedNAD)
+			_, err = c.syncUserDefinedNetwork(udn)
 			Expect(err).To(Equal(errors.New("foreign NetworkAttachmentDefinition with the desired name already exist [test/test]")))
 		})
 
@@ -448,7 +449,7 @@ var _ = Describe("User Defined Network Controller", func() {
 			unmanagedNAD, err = nadClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(udn.Namespace).Create(context.Background(), unmanagedNAD, metav1.CreateOptions{})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = c.syncUserDefinedNetwork(udn, unmanagedNAD)
+			_, err = c.syncUserDefinedNetwork(udn)
 			Expect(err).ToNot(HaveOccurred())
 
 			expectedFinalizers := testNAD().Finalizers
@@ -465,8 +466,9 @@ var _ = Describe("User Defined Network Controller", func() {
 			nad := testNAD()
 			nad, err = nadClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(udn.Namespace).Create(context.Background(), nad, metav1.CreateOptions{})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(nadInformer.Informer().GetIndexer().Add(nad)).To(Succeed())
 
-			_, err = c.syncUserDefinedNetwork(udn, nad)
+			_, err = c.syncUserDefinedNetwork(udn)
 			Expect(err).ToNot(HaveOccurred())
 
 			nad, err = nadClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(udn.Namespace).Get(context.Background(), nad.Name, metav1.GetOptions{})
@@ -483,13 +485,14 @@ var _ = Describe("User Defined Network Controller", func() {
 			nad := testNAD()
 			nad, err = nadClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(udn.Namespace).Create(context.Background(), nad, metav1.CreateOptions{})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(nadInformer.Informer().GetIndexer().Add(nad)).To(Succeed())
 
 			expectedErr := errors.New("update NAD error")
 			nadClient.PrependReactor("update", "network-attachment-definitions", func(action testing.Action) (bool, runtime.Object, error) {
 				return true, nil, expectedErr
 			})
 
-			_, err = c.syncUserDefinedNetwork(udn, nad)
+			_, err = c.syncUserDefinedNetwork(udn)
 			Expect(err).To(MatchError(expectedErr))
 		})
 
@@ -505,7 +508,7 @@ var _ = Describe("User Defined Network Controller", func() {
 			nad, err = nadClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(udn.Namespace).Create(context.Background(), nad, metav1.CreateOptions{})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = c.syncUserDefinedNetwork(udn, nad)
+			_, err = c.syncUserDefinedNetwork(udn)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(udn.Finalizers).To(BeEmpty())
 		})
@@ -516,7 +519,7 @@ var _ = Describe("User Defined Network Controller", func() {
 			udn, err := udnClient.K8sV1().UserDefinedNetworks(udn.Namespace).Create(context.Background(), udn, metav1.CreateOptions{})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = c.syncUserDefinedNetwork(udn, nil)
+			_, err = c.syncUserDefinedNetwork(udn)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(udn.Finalizers).To(BeEmpty())
 		})
@@ -537,7 +540,7 @@ var _ = Describe("User Defined Network Controller", func() {
 				return true, nil, expectedErr
 			})
 
-			_, err = c.syncUserDefinedNetwork(udn, nad)
+			_, err = c.syncUserDefinedNetwork(udn)
 			Expect(err).To(MatchError(expectedErr))
 		})
 
@@ -549,6 +552,7 @@ var _ = Describe("User Defined Network Controller", func() {
 			nad := testNAD()
 			nad, err = nadClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(udn.Namespace).Create(context.Background(), nad, metav1.CreateOptions{})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(nadInformer.Informer().GetIndexer().Add(nad)).To(Succeed())
 
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -563,7 +567,7 @@ var _ = Describe("User Defined Network Controller", func() {
 			Expect(podInformer.Informer().GetIndexer().Add(pod)).Should(Succeed())
 			c := New(nadClient, nadInformer, udnClient, udnInformer, renderNadStub(nad), podInformer, nil)
 
-			nad, err = c.syncUserDefinedNetwork(udn, nad)
+			_, err = c.syncUserDefinedNetwork(udn)
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(udn.Finalizers).To(BeEmpty())
@@ -593,7 +597,7 @@ var _ = Describe("User Defined Network Controller", func() {
 
 				c := New(nadClient, nadInformer, udnClient, udnInformer, renderNadStub(nad), podInformer, nil)
 
-				_, err := c.syncUserDefinedNetwork(udn, nad)
+				_, err := c.syncUserDefinedNetwork(udn)
 				Expect(err).To(MatchError(ContainSubstring(expectedErr.Error())))
 
 				actual, _, err := nadInformer.Informer().GetIndexer().Get(nad)
