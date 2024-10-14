@@ -117,12 +117,14 @@ type DefaultNodeNetworkController struct {
 	nadController *nad.NetAttachDefinitionController
 
 	cniServer *cni.Server
+
+	udnHostIsolationManager *UDNHostIsolationManager
 }
 
 func newDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, stopChan chan struct{},
-	wg *sync.WaitGroup, routeManager *routemanager.Controller) *DefaultNodeNetworkController {
+	wg *sync.WaitGroup, routeManager *routemanager.Controller, nadController *nad.NetAttachDefinitionController) *DefaultNodeNetworkController {
 
-	return &DefaultNodeNetworkController{
+	c := &DefaultNodeNetworkController{
 		BaseNodeNetworkController: BaseNodeNetworkController{
 			CommonNodeNetworkControllerInfo: *cnnci,
 			NetInfo:                         &util.DefaultNetInfo{},
@@ -131,6 +133,11 @@ func newDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, sto
 		},
 		routeManager: routeManager,
 	}
+	if util.IsNetworkSegmentationSupportEnabled() {
+		c.udnHostIsolationManager = NewUDNHostIsolationManager(config.IPv4Mode, config.IPv6Mode,
+			cnnci.watchFactory.PodCoreInformer(), nadController)
+	}
+	return c
 }
 
 // NewDefaultNodeNetworkController creates a new network controller for node management of the default network
@@ -138,7 +145,7 @@ func NewDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, nad
 	var err error
 	stopChan := make(chan struct{})
 	wg := &sync.WaitGroup{}
-	nc := newDefaultNodeNetworkController(cnnci, stopChan, wg, cnnci.routeManager)
+	nc := newDefaultNodeNetworkController(cnnci, stopChan, wg, cnnci.routeManager, nadController)
 
 	if len(config.Kubernetes.HealthzBindAddress) != 0 {
 		klog.Infof("Enable node proxy healthz server on %s", config.Kubernetes.HealthzBindAddress)
@@ -781,6 +788,15 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 		err = setupOVNNode(node)
 		if err != nil {
 			return err
+		}
+		if nc.udnHostIsolationManager != nil {
+			if err = nc.udnHostIsolationManager.Start(ctx); err != nil {
+				return err
+			}
+		} else {
+			if err = CleanupUDNHostIsolation(); err != nil {
+				return fmt.Errorf("failed cleaning up UDN host isolation: %w", err)
+			}
 		}
 	}
 
