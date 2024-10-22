@@ -23,7 +23,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// ClusterUserDefinedNetworkApplyConfiguration represents an declarative configuration of the ClusterUserDefinedNetwork type for use
+// ClusterUserDefinedNetworkApplyConfiguration represents a declarative configuration of the ClusterUserDefinedNetwork type for use
 // with apply.
 type ClusterUserDefinedNetworkApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -32,7 +32,7 @@ type ClusterUserDefinedNetworkApplyConfiguration struct {
 	Status                           *ClusterUserDefinedNetworkStatusApplyConfiguration `json:"status,omitempty"`
 }
 
-// ClusterUserDefinedNetwork constructs an declarative configuration of the ClusterUserDefinedNetwork type for use with
+// ClusterUserDefinedNetwork constructs a declarative configuration of the ClusterUserDefinedNetwork type for use with
 // apply.
 func ClusterUserDefinedNetwork(name string) *ClusterUserDefinedNetworkApplyConfiguration {
 	b := &ClusterUserDefinedNetworkApplyConfiguration{}
@@ -214,4 +214,10 @@ func (b *ClusterUserDefinedNetworkApplyConfiguration) WithSpec(value *ClusterUse
 func (b *ClusterUserDefinedNetworkApplyConfiguration) WithStatus(value *ClusterUserDefinedNetworkStatusApplyConfiguration) *ClusterUserDefinedNetworkApplyConfiguration {
 	b.Status = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *ClusterUserDefinedNetworkApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

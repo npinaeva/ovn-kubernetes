@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"slices"
 	"strings"
 	"sync"
@@ -120,7 +121,7 @@ func New(
 	c.udnController = controller.NewController[userdefinednetworkv1.UserDefinedNetwork]("user-defined-network-controller", udnCfg)
 
 	cudnCfg := &controller.ControllerConfig[userdefinednetworkv1.ClusterUserDefinedNetwork]{
-		RateLimiter:    workqueue.DefaultControllerRateLimiter(),
+		RateLimiter:    workqueue.DefaultTypedControllerRateLimiter[string](),
 		Reconcile:      c.reconcileCUDN,
 		ObjNeedsUpdate: c.cudnNeedUpdate,
 		Threadiness:    1,
@@ -429,7 +430,6 @@ func updateCondition(conditions []metav1.Condition, cond *metav1.Condition) ([]m
 	return conditions, false
 }
 
-
 // UpdateSubsystemCondition may be used by other controllers handling UDN/NAD/network setup to report conditions that
 // may affect UDN functionality.
 // FieldManager should be unique for every subsystem.
@@ -438,22 +438,28 @@ func updateCondition(conditions []metav1.Condition, cond *metav1.Condition) ([]m
 // When condition should not change, but new events should be reported, pass condition = nil.
 func (c *Controller) UpdateSubsystemCondition(networkName string, fieldManager string, condition *metav1.Condition,
 	events ...*util.EventDetails) error {
-	// try to find udn using network name
+	// try to find (c)udn using network name
 	udnNamespace, udnName := template.ParseNetworkName(networkName)
 	if udnName == "" {
 		return nil
 	}
-	udn, err := c.udnLister.UserDefinedNetworks(udnNamespace).Get(udnName)
+	var obj client.Object
+	var err error
+	if udnNamespace == "" {
+		obj, err = c.cudnLister.Get(udnName)
+	} else {
+		obj, err = c.udnLister.UserDefinedNetworks(udnNamespace).Get(udnName)
+	}
 	if err != nil {
 		return nil
 	}
 
-	udnRef, err := reference.GetReference(userdefinednetworkscheme.Scheme, udn)
+	objRef, err := reference.GetReference(userdefinednetworkscheme.Scheme, obj)
 	if err != nil {
-		return fmt.Errorf("failed to get object reference for UserDefinedNetwork %s/%s: %w", udnNamespace, udnName, err)
+		return fmt.Errorf("failed to get object reference for (Cluster)UserDefinedNetwork %s/%s: %w", udnNamespace, udnName, err)
 	}
 	for _, event := range events {
-		c.eventRecorder.Event(udnRef, event.EventType, event.Reason, event.Note)
+		c.eventRecorder.Event(objRef, event.EventType, event.Reason, event.Note)
 	}
 
 	if condition == nil {
@@ -467,20 +473,26 @@ func (c *Controller) UpdateSubsystemCondition(networkName string, fieldManager s
 		Reason:             &condition.Reason,
 		Message:            &condition.Message,
 	}
-
-	udnStatus := udnapplyconfkv1.UserDefinedNetworkStatus().WithConditions(applyCondition)
-
-	applyUDN := udnapplyconfkv1.UserDefinedNetwork(udnName, udnNamespace).WithStatus(udnStatus)
 	opts := metav1.ApplyOptions{
 		FieldManager: fieldManager,
 		Force:        true,
 	}
-	_, err = c.udnClient.K8sV1().UserDefinedNetworks(udnNamespace).ApplyStatus(context.Background(), applyUDN, opts)
+
+	if udnNamespace == "" {
+		cudnStatus := udnapplyconfkv1.ClusterUserDefinedNetworkStatus().WithConditions(applyCondition)
+		applyUDN := udnapplyconfkv1.ClusterUserDefinedNetwork(udnName).WithStatus(cudnStatus)
+		_, err = c.udnClient.K8sV1().ClusterUserDefinedNetworks().ApplyStatus(context.Background(), applyUDN, opts)
+	} else {
+		udnStatus := udnapplyconfkv1.UserDefinedNetworkStatus().WithConditions(applyCondition)
+		applyUDN := udnapplyconfkv1.UserDefinedNetwork(udnName, udnNamespace).WithStatus(udnStatus)
+		_, err = c.udnClient.K8sV1().UserDefinedNetworks(udnNamespace).ApplyStatus(context.Background(), applyUDN, opts)
+	}
+
 	if err != nil {
 		if kerrors.IsNotFound(err) {
 			return nil
 		}
-		return fmt.Errorf("failed to update UserDefinedNetwork %s/%s status: %w", udnNamespace, udnName, err)
+		return fmt.Errorf("failed to update (Cluster)UserDefinedNetwork %s/%s status: %w", udnNamespace, udnName, err)
 	}
 	return nil
 }
@@ -639,12 +651,22 @@ func (c *Controller) updateClusterUDNStatus(cudn *userdefinednetworkv1.ClusterUs
 	}
 
 	var err error
-	applyConf := udnapplyconfkv1.ClusterUserDefinedNetwork(cudn.Name).
+	conditionsApply := make([]*metaapplyv1.ConditionApplyConfiguration, len(conditions))
+	for i := range conditions {
+		conditionsApply[i] = &metaapplyv1.ConditionApplyConfiguration{
+			Type:               &conditions[i].Type,
+			Status:             &conditions[i].Status,
+			LastTransitionTime: &conditions[i].LastTransitionTime,
+			Reason:             &conditions[i].Reason,
+			Message:            &conditions[i].Message,
+		}
+	}
+	udnApplyConf := udnapplyconfkv1.ClusterUserDefinedNetwork(cudn.Name).
 		WithStatus(udnapplyconfkv1.ClusterUserDefinedNetworkStatus().
-			WithConditions(conditions...))
+			WithConditions(conditionsApply...))
 	opts := metav1.ApplyOptions{FieldManager: "user-defined-network-controller"}
 	cudnName := cudn.Name
-	cudn, err = c.udnClient.K8sV1().ClusterUserDefinedNetworks().ApplyStatus(context.Background(), applyConf, opts)
+	cudn, err = c.udnClient.K8sV1().ClusterUserDefinedNetworks().ApplyStatus(context.Background(), udnApplyConf, opts)
 	if err != nil {
 		if kerrors.IsNotFound(err) {
 			return nil
@@ -652,7 +674,6 @@ func (c *Controller) updateClusterUDNStatus(cudn *userdefinednetworkv1.ClusterUs
 		return fmt.Errorf("failed to update ClusterUserDefinedNetwork status %q: %w", cudnName, err)
 	}
 	klog.Infof("Updated status ClusterUserDefinedNetwork %q", cudn.Name)
-
 	return nil
 }
 

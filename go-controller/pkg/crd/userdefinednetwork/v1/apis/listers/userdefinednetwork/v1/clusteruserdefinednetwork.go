@@ -19,8 +19,8 @@ package v1
 
 import (
 	v1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/userdefinednetwork/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/listers"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -38,30 +38,10 @@ type ClusterUserDefinedNetworkLister interface {
 
 // clusterUserDefinedNetworkLister implements the ClusterUserDefinedNetworkLister interface.
 type clusterUserDefinedNetworkLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*v1.ClusterUserDefinedNetwork]
 }
 
 // NewClusterUserDefinedNetworkLister returns a new ClusterUserDefinedNetworkLister.
 func NewClusterUserDefinedNetworkLister(indexer cache.Indexer) ClusterUserDefinedNetworkLister {
-	return &clusterUserDefinedNetworkLister{indexer: indexer}
-}
-
-// List lists all ClusterUserDefinedNetworks in the indexer.
-func (s *clusterUserDefinedNetworkLister) List(selector labels.Selector) (ret []*v1.ClusterUserDefinedNetwork, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1.ClusterUserDefinedNetwork))
-	})
-	return ret, err
-}
-
-// Get retrieves the ClusterUserDefinedNetwork from the index for a given name.
-func (s *clusterUserDefinedNetworkLister) Get(name string) (*v1.ClusterUserDefinedNetwork, error) {
-	obj, exists, err := s.indexer.GetByKey(name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1.Resource("clusteruserdefinednetwork"), name)
-	}
-	return obj.(*v1.ClusterUserDefinedNetwork), nil
+	return &clusterUserDefinedNetworkLister{listers.New[*v1.ClusterUserDefinedNetwork](indexer, v1.Resource("clusteruserdefinednetwork"))}
 }

@@ -30,7 +30,7 @@ func NewNamespaceNotifier(nsInformer corev1informer.NamespaceInformer, subscribe
 
 	nsLister := nsInformer.Lister()
 	cfg := &controller.ControllerConfig[corev1.Namespace]{
-		RateLimiter:    workqueue.DefaultControllerRateLimiter(),
+		RateLimiter:    workqueue.DefaultTypedControllerRateLimiter[string](),
 		Reconcile:      c.reconcile,
 		ObjNeedsUpdate: c.needUpdate,
 		Threadiness:    1,

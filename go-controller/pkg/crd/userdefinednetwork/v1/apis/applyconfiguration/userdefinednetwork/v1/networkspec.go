@@ -21,7 +21,7 @@ import (
 	v1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/userdefinednetwork/v1"
 )
 
-// NetworkSpecApplyConfiguration represents an declarative configuration of the NetworkSpec type for use
+// NetworkSpecApplyConfiguration represents a declarative configuration of the NetworkSpec type for use
 // with apply.
 type NetworkSpecApplyConfiguration struct {
 	Topology *v1.NetworkTopology             `json:"topology,omitempty"`
@@ -29,7 +29,7 @@ type NetworkSpecApplyConfiguration struct {
 	Layer2   *Layer2ConfigApplyConfiguration `json:"layer2,omitempty"`
 }
 
-// NetworkSpecApplyConfiguration constructs an declarative configuration of the NetworkSpec type for use with
+// NetworkSpecApplyConfiguration constructs a declarative configuration of the NetworkSpec type for use with
 // apply.
 func NetworkSpec() *NetworkSpecApplyConfiguration {
 	return &NetworkSpecApplyConfiguration{}

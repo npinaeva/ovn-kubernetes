@@ -19,9 +19,6 @@ package v1
 
 import (
 	"context"
-	json "encoding/json"
-	"fmt"
-	"time"
 
 	v1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/userdefinednetwork/v1"
 	userdefinednetworkv1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/userdefinednetwork/v1/apis/applyconfiguration/userdefinednetwork/v1"
@@ -29,7 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
-	rest "k8s.io/client-go/rest"
+	gentype "k8s.io/client-go/gentype"
 )
 
 // ClusterUserDefinedNetworksGetter has a method to return a ClusterUserDefinedNetworkInterface.
@@ -42,6 +39,7 @@ type ClusterUserDefinedNetworksGetter interface {
 type ClusterUserDefinedNetworkInterface interface {
 	Create(ctx context.Context, clusterUserDefinedNetwork *v1.ClusterUserDefinedNetwork, opts metav1.CreateOptions) (*v1.ClusterUserDefinedNetwork, error)
 	Update(ctx context.Context, clusterUserDefinedNetwork *v1.ClusterUserDefinedNetwork, opts metav1.UpdateOptions) (*v1.ClusterUserDefinedNetwork, error)
+	// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
 	UpdateStatus(ctx context.Context, clusterUserDefinedNetwork *v1.ClusterUserDefinedNetwork, opts metav1.UpdateOptions) (*v1.ClusterUserDefinedNetwork, error)
 	Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
 	DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error
@@ -50,193 +48,25 @@ type ClusterUserDefinedNetworkInterface interface {
 	Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error)
 	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.ClusterUserDefinedNetwork, err error)
 	Apply(ctx context.Context, clusterUserDefinedNetwork *userdefinednetworkv1.ClusterUserDefinedNetworkApplyConfiguration, opts metav1.ApplyOptions) (result *v1.ClusterUserDefinedNetwork, err error)
+	// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
 	ApplyStatus(ctx context.Context, clusterUserDefinedNetwork *userdefinednetworkv1.ClusterUserDefinedNetworkApplyConfiguration, opts metav1.ApplyOptions) (result *v1.ClusterUserDefinedNetwork, err error)
 	ClusterUserDefinedNetworkExpansion
 }
 
 // clusterUserDefinedNetworks implements ClusterUserDefinedNetworkInterface
 type clusterUserDefinedNetworks struct {
-	client rest.Interface
+	*gentype.ClientWithListAndApply[*v1.ClusterUserDefinedNetwork, *v1.ClusterUserDefinedNetworkList, *userdefinednetworkv1.ClusterUserDefinedNetworkApplyConfiguration]
 }
 
 // newClusterUserDefinedNetworks returns a ClusterUserDefinedNetworks
 func newClusterUserDefinedNetworks(c *K8sV1Client) *clusterUserDefinedNetworks {
 	return &clusterUserDefinedNetworks{
-		client: c.RESTClient(),
+		gentype.NewClientWithListAndApply[*v1.ClusterUserDefinedNetwork, *v1.ClusterUserDefinedNetworkList, *userdefinednetworkv1.ClusterUserDefinedNetworkApplyConfiguration](
+			"clusteruserdefinednetworks",
+			c.RESTClient(),
+			scheme.ParameterCodec,
+			"",
+			func() *v1.ClusterUserDefinedNetwork { return &v1.ClusterUserDefinedNetwork{} },
+			func() *v1.ClusterUserDefinedNetworkList { return &v1.ClusterUserDefinedNetworkList{} }),
 	}
-}
-
-// Get takes name of the clusterUserDefinedNetwork, and returns the corresponding clusterUserDefinedNetwork object, and an error if there is any.
-func (c *clusterUserDefinedNetworks) Get(ctx context.Context, name string, options metav1.GetOptions) (result *v1.ClusterUserDefinedNetwork, err error) {
-	result = &v1.ClusterUserDefinedNetwork{}
-	err = c.client.Get().
-		Resource("clusteruserdefinednetworks").
-		Name(name).
-		VersionedParams(&options, scheme.ParameterCodec).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// List takes label and field selectors, and returns the list of ClusterUserDefinedNetworks that match those selectors.
-func (c *clusterUserDefinedNetworks) List(ctx context.Context, opts metav1.ListOptions) (result *v1.ClusterUserDefinedNetworkList, err error) {
-	var timeout time.Duration
-	if opts.TimeoutSeconds != nil {
-		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
-	}
-	result = &v1.ClusterUserDefinedNetworkList{}
-	err = c.client.Get().
-		Resource("clusteruserdefinednetworks").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Watch returns a watch.Interface that watches the requested clusterUserDefinedNetworks.
-func (c *clusterUserDefinedNetworks) Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error) {
-	var timeout time.Duration
-	if opts.TimeoutSeconds != nil {
-		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
-	}
-	opts.Watch = true
-	return c.client.Get().
-		Resource("clusteruserdefinednetworks").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Watch(ctx)
-}
-
-// Create takes the representation of a clusterUserDefinedNetwork and creates it.  Returns the server's representation of the clusterUserDefinedNetwork, and an error, if there is any.
-func (c *clusterUserDefinedNetworks) Create(ctx context.Context, clusterUserDefinedNetwork *v1.ClusterUserDefinedNetwork, opts metav1.CreateOptions) (result *v1.ClusterUserDefinedNetwork, err error) {
-	result = &v1.ClusterUserDefinedNetwork{}
-	err = c.client.Post().
-		Resource("clusteruserdefinednetworks").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(clusterUserDefinedNetwork).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Update takes the representation of a clusterUserDefinedNetwork and updates it. Returns the server's representation of the clusterUserDefinedNetwork, and an error, if there is any.
-func (c *clusterUserDefinedNetworks) Update(ctx context.Context, clusterUserDefinedNetwork *v1.ClusterUserDefinedNetwork, opts metav1.UpdateOptions) (result *v1.ClusterUserDefinedNetwork, err error) {
-	result = &v1.ClusterUserDefinedNetwork{}
-	err = c.client.Put().
-		Resource("clusteruserdefinednetworks").
-		Name(clusterUserDefinedNetwork.Name).
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(clusterUserDefinedNetwork).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *clusterUserDefinedNetworks) UpdateStatus(ctx context.Context, clusterUserDefinedNetwork *v1.ClusterUserDefinedNetwork, opts metav1.UpdateOptions) (result *v1.ClusterUserDefinedNetwork, err error) {
-	result = &v1.ClusterUserDefinedNetwork{}
-	err = c.client.Put().
-		Resource("clusteruserdefinednetworks").
-		Name(clusterUserDefinedNetwork.Name).
-		SubResource("status").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(clusterUserDefinedNetwork).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Delete takes name of the clusterUserDefinedNetwork and deletes it. Returns an error if one occurs.
-func (c *clusterUserDefinedNetworks) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
-	return c.client.Delete().
-		Resource("clusteruserdefinednetworks").
-		Name(name).
-		Body(&opts).
-		Do(ctx).
-		Error()
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *clusterUserDefinedNetworks) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
-	var timeout time.Duration
-	if listOpts.TimeoutSeconds != nil {
-		timeout = time.Duration(*listOpts.TimeoutSeconds) * time.Second
-	}
-	return c.client.Delete().
-		Resource("clusteruserdefinednetworks").
-		VersionedParams(&listOpts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Body(&opts).
-		Do(ctx).
-		Error()
-}
-
-// Patch applies the patch and returns the patched clusterUserDefinedNetwork.
-func (c *clusterUserDefinedNetworks) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.ClusterUserDefinedNetwork, err error) {
-	result = &v1.ClusterUserDefinedNetwork{}
-	err = c.client.Patch(pt).
-		Resource("clusteruserdefinednetworks").
-		Name(name).
-		SubResource(subresources...).
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(data).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Apply takes the given apply declarative configuration, applies it and returns the applied clusterUserDefinedNetwork.
-func (c *clusterUserDefinedNetworks) Apply(ctx context.Context, clusterUserDefinedNetwork *userdefinednetworkv1.ClusterUserDefinedNetworkApplyConfiguration, opts metav1.ApplyOptions) (result *v1.ClusterUserDefinedNetwork, err error) {
-	if clusterUserDefinedNetwork == nil {
-		return nil, fmt.Errorf("clusterUserDefinedNetwork provided to Apply must not be nil")
-	}
-	patchOpts := opts.ToPatchOptions()
-	data, err := json.Marshal(clusterUserDefinedNetwork)
-	if err != nil {
-		return nil, err
-	}
-	name := clusterUserDefinedNetwork.Name
-	if name == nil {
-		return nil, fmt.Errorf("clusterUserDefinedNetwork.Name must be provided to Apply")
-	}
-	result = &v1.ClusterUserDefinedNetwork{}
-	err = c.client.Patch(types.ApplyPatchType).
-		Resource("clusteruserdefinednetworks").
-		Name(*name).
-		VersionedParams(&patchOpts, scheme.ParameterCodec).
-		Body(data).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// ApplyStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
-func (c *clusterUserDefinedNetworks) ApplyStatus(ctx context.Context, clusterUserDefinedNetwork *userdefinednetworkv1.ClusterUserDefinedNetworkApplyConfiguration, opts metav1.ApplyOptions) (result *v1.ClusterUserDefinedNetwork, err error) {
-	if clusterUserDefinedNetwork == nil {
-		return nil, fmt.Errorf("clusterUserDefinedNetwork provided to Apply must not be nil")
-	}
-	patchOpts := opts.ToPatchOptions()
-	data, err := json.Marshal(clusterUserDefinedNetwork)
-	if err != nil {
-		return nil, err
-	}
-
-	name := clusterUserDefinedNetwork.Name
-	if name == nil {
-		return nil, fmt.Errorf("clusterUserDefinedNetwork.Name must be provided to Apply")
-	}
-
-	result = &v1.ClusterUserDefinedNetwork{}
-	err = c.client.Patch(types.ApplyPatchType).
-		Resource("clusteruserdefinednetworks").
-		Name(*name).
-		SubResource("status").
-		VersionedParams(&patchOpts, scheme.ParameterCodec).
-		Body(data).
-		Do(ctx).
-		Into(result)
-	return
 }
