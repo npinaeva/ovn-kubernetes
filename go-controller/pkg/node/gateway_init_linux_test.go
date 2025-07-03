@@ -389,7 +389,7 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 			// we cannot start the shared gw directly because it will spawn a goroutine that may not be bound to the test netns
 			// Start does two things, starts nodeIPManager which spawns a go routine and also starts openflow manager by spawning a go routine
 			//sharedGw.Start()
-			sharedGw.nodeIPManager.sync()
+			sharedGw.nodeIPManager.Sync()
 			// we cannot start openflow manager directly because it spawns a go routine
 			// FIXME: extract openflow manager func from the spawning of a go routine so it can be called directly below.
 			sharedGw.openflowManager.syncFlows()
@@ -777,7 +777,7 @@ func shareGatewayInterfaceDPUTest(app *cli.App, testNS ns.NetNS,
 			// we cannot start the shared gw directly because it will spawn a goroutine that may not be bound to the test netns
 			// Start does two things, starts nodeIPManager which spawns a go routine and also starts openflow manager by spawning a go routine
 			//sharedGw.Start()
-			sharedGw.nodeIPManager.sync()
+			sharedGw.nodeIPManager.Sync()
 			// we cannot start openflow manager directly because it spawns a go routine
 			// FIXME: extract openflow manager func from the spawning of a go routine so it can be called directly below.
 			sharedGw.openflowManager.syncFlows()
@@ -1271,7 +1271,7 @@ OFPT_GET_CONFIG_REPLY (xid=0x4): frags=normal miss_send_len=0`
 			// we cannot start the shared gw directly because it will spawn a goroutine that may not be bound to the test netns
 			// Start does two things, starts nodeIPManager which spawns a go routine and also starts openflow manager by spawning a go routine
 			// localGw.Start()
-			localGw.nodeIPManager.sync()
+			localGw.nodeIPManager.Sync()
 			// we cannot start openflow manager directly because it spawns a go routine
 			// FIXME: extract openflow manager func from the spawning of a go routine so it can be called directly below.
 			localGw.openflowManager.syncFlows()

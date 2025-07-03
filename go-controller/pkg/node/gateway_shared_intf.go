@@ -26,6 +26,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/networkmanager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/addressmanager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/bridgeconfig"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/egressipgw"
 	nodeipt "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/iptables"
@@ -194,7 +195,7 @@ type nodePortWatcher struct {
 	serviceInfo     map[ktypes.NamespacedName]*serviceConfig
 	serviceInfoLock sync.Mutex
 	ofm             *openflowManager
-	nodeIPManager   *addressManager
+	nodeIPManager   *addressmanager.AddressManager
 	networkManager  networkmanager.Interface
 	watchFactory    factory.NodeWatchFactory
 }
@@ -1211,7 +1212,7 @@ func (npw *nodePortWatcher) DeleteEndpointSlice(epSlice *discovery.EndpointSlice
 
 // GetLocalEndpointAddresses returns a list of eligible endpoints that are local to the node
 func (npw *nodePortWatcher) GetLocalEligibleEndpointAddresses(endpointSlices []*discovery.EndpointSlice, service *corev1.Service) sets.Set[string] {
-	return util.GetLocalEligibleEndpointAddressesFromSlices(endpointSlices, service, npw.nodeIPManager.nodeName)
+	return util.GetLocalEligibleEndpointAddressesFromSlices(endpointSlices, service, npw.nodeIPManager.NodeName)
 }
 
 func (npw *nodePortWatcher) UpdateEndpointSlice(oldEpSlice, newEpSlice *discovery.EndpointSlice) error {
@@ -1478,7 +1479,7 @@ func newGateway(
 			gw.bridgeEIPAddrManager = egressipgw.NewBridgeEIPAddrManager(nodeName, gwBridge.GetBridgeName(), linkManager, kube, watchFactory.EgressIPInformer(), watchFactory.NodeCoreInformer())
 			gwBridge.SetEIPMarkIPs(gw.bridgeEIPAddrManager.GetCache())
 		}
-		gw.nodeIPManager = newAddressManager(nodeName, kube, mgmtPort, watchFactory, gwBridge)
+		gw.nodeIPManager = addressmanager.NewAddressManager(nodeName, kube, mgmtPort, watchFactory, gwBridge)
 
 		if config.OvnKubeNode.Mode == types.NodeModeFull {
 			// Delete stale masquerade resources if there are any. This is to make sure that there
@@ -1553,7 +1554,7 @@ func newGateway(
 func newNodePortWatcher(
 	gwBridge *bridgeconfig.BridgeConfiguration,
 	ofm *openflowManager,
-	nodeIPManager *addressManager,
+	nodeIPManager *addressmanager.AddressManager,
 	watchFactory factory.NodeWatchFactory,
 	networkManager networkmanager.Interface,
 ) (*nodePortWatcher, error) {

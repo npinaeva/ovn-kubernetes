@@ -1,7 +1,7 @@
 //go:build linux
 // +build linux
 
-package node
+package addressmanager
 
 import (
 	"fmt"
@@ -26,13 +26,13 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
-type addressManager struct {
-	nodeName      string
+type AddressManager struct {
+	NodeName      string
 	watchFactory  factory.NodeWatchFactory
-	cidrs         sets.Set[string]
+	Cidrs         sets.Set[string]
 	nodeAnnotator kube.Annotator
-	mgmtPort      managementport.Interface
-	// useNetlink indicates the addressManager should use machine
+	MgmtPort      managementport.Interface
+	// useNetlink indicates the AddressManager should use machine
 	// information from netlink. Set to false for testcases.
 	useNetlink bool
 	syncPeriod time.Duration
@@ -41,23 +41,29 @@ type addressManager struct {
 	gatewayBridge   *bridgeconfig.BridgeConfiguration
 
 	OnChanged func()
-	sync.Mutex
+	mutex     sync.Mutex
 }
 
 // initializes a new address manager which will hold all the IPs on a node
-func newAddressManager(nodeName string, k kube.Interface, mgmtPort managementport.Interface, watchFactory factory.NodeWatchFactory, gwBridge *bridgeconfig.BridgeConfiguration) *addressManager {
+func NewAddressManager(nodeName string, k kube.Interface, mgmtPort managementport.Interface, watchFactory factory.NodeWatchFactory, gwBridge *bridgeconfig.BridgeConfiguration) *AddressManager {
 	return newAddressManagerInternal(nodeName, k, mgmtPort, watchFactory, gwBridge, true)
+}
+
+func NewTestAddressManager(nodeName string, k kube.Interface, watchFactory factory.NodeWatchFactory, cidrs sets.Set[string]) *AddressManager {
+	m := newAddressManagerInternal(nodeName, k, nil, watchFactory, nil, false)
+	m.Cidrs = cidrs
+	return m
 }
 
 // newAddressManagerInternal creates a new address manager; this function is
 // only expose for testcases to disable netlink subscription to ensure
 // reproducibility of unit tests.
-func newAddressManagerInternal(nodeName string, k kube.Interface, mgmtPort managementport.Interface, watchFactory factory.NodeWatchFactory, gwBridge *bridgeconfig.BridgeConfiguration, useNetlink bool) *addressManager {
-	mgr := &addressManager{
-		nodeName:      nodeName,
+func newAddressManagerInternal(nodeName string, k kube.Interface, mgmtPort managementport.Interface, watchFactory factory.NodeWatchFactory, gwBridge *bridgeconfig.BridgeConfiguration, useNetlink bool) *AddressManager {
+	mgr := &AddressManager{
+		NodeName:      nodeName,
 		watchFactory:  watchFactory,
-		cidrs:         sets.New[string](),
-		mgmtPort:      mgmtPort,
+		Cidrs:         sets.New[string](),
+		MgmtPort:      mgmtPort,
 		gatewayBridge: gwBridge,
 		OnChanged:     func() {},
 		useNetlink:    useNetlink,
@@ -90,7 +96,7 @@ func newAddressManagerInternal(nodeName string, k kube.Interface, mgmtPort manag
 			return nil
 		}
 	} else {
-		mgr.sync()
+		mgr.Sync()
 	}
 
 	return mgr
@@ -98,12 +104,12 @@ func newAddressManagerInternal(nodeName string, k kube.Interface, mgmtPort manag
 
 // updates the address manager with a new IP
 // returns true if there was an update
-func (c *addressManager) addAddr(ipnet net.IPNet, linkIndex int) bool {
-	c.Lock()
-	defer c.Unlock()
-	if !c.cidrs.Has(ipnet.String()) && c.isValidNodeIP(ipnet.IP, linkIndex) {
+func (c *AddressManager) addAddr(ipnet net.IPNet, linkIndex int) bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if !c.Cidrs.Has(ipnet.String()) && c.isValidNodeIP(ipnet.IP, linkIndex) {
 		klog.Infof("Adding IP: %s, to node IP manager", ipnet)
-		c.cidrs.Insert(ipnet.String())
+		c.Cidrs.Insert(ipnet.String())
 		return true
 	}
 
@@ -112,12 +118,12 @@ func (c *addressManager) addAddr(ipnet net.IPNet, linkIndex int) bool {
 
 // removes IP from address manager
 // returns true if there was an update
-func (c *addressManager) delAddr(ipnet net.IPNet, linkIndex int) bool {
-	c.Lock()
-	defer c.Unlock()
-	if c.cidrs.Has(ipnet.String()) && c.isValidNodeIP(ipnet.IP, linkIndex) {
+func (c *AddressManager) delAddr(ipnet net.IPNet, linkIndex int) bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if c.Cidrs.Has(ipnet.String()) && c.isValidNodeIP(ipnet.IP, linkIndex) {
 		klog.Infof("Removing IP: %s, from node IP manager", ipnet)
-		c.cidrs.Delete(ipnet.String())
+		c.Cidrs.Delete(ipnet.String())
 		return true
 	}
 
@@ -125,10 +131,10 @@ func (c *addressManager) delAddr(ipnet net.IPNet, linkIndex int) bool {
 }
 
 // ListAddresses returns all the addresses we know about
-func (c *addressManager) ListAddresses() ([]net.IP, []*net.IPNet) {
-	c.Lock()
-	defer c.Unlock()
-	addrs := sets.List(c.cidrs)
+func (c *AddressManager) ListAddresses() ([]net.IP, []*net.IPNet) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	addrs := sets.List(c.Cidrs)
 	addresses := make([]net.IP, 0, len(addrs))
 	networkAddresses := make([]*net.IPNet, 0, len(addrs))
 	for _, addr := range addrs {
@@ -145,7 +151,7 @@ func (c *addressManager) ListAddresses() ([]net.IP, []*net.IPNet) {
 
 type subscribeFn func() (bool, chan netlink.AddrUpdate, error)
 
-func (c *addressManager) Run(stopChan <-chan struct{}, doneWg *sync.WaitGroup) {
+func (c *AddressManager) Run(stopChan <-chan struct{}, doneWg *sync.WaitGroup) {
 	if config.OvnKubeNode.Mode == types.NodeModeDPU {
 		return
 	}
@@ -165,7 +171,7 @@ func (c *addressManager) Run(stopChan <-chan struct{}, doneWg *sync.WaitGroup) {
 // conveys address updates that can be processed upon immediately.
 // Event 2: Ticker events which is used to trigger a sync func. This is required in-case address change events are missed.
 // Event 3: Stop events which stops event watching and returns.
-func (c *addressManager) runInternal(stopChan <-chan struct{}, subscribe subscribeFn) {
+func (c *AddressManager) runInternal(stopChan <-chan struct{}, subscribe subscribeFn) {
 	addressSyncTimer := time.NewTicker(c.syncPeriod)
 	defer addressSyncTimer.Stop()
 
@@ -193,7 +199,7 @@ func (c *addressManager) runInternal(stopChan <-chan struct{}, subscribe subscri
 
 			c.handleNodePrimaryAddrChange()
 			if addrChanged || !c.doNodeHostCIDRsMatch() {
-				klog.Infof("Host CIDRs changed to %v. Updating node address annotations.", c.cidrs)
+				klog.Infof("Host CIDRs changed to %v. Updating node address annotations.", c.Cidrs)
 				err := c.updateNodeAddressAnnotations()
 				if err != nil {
 					klog.Errorf("Address Manager failed to update node address annotations: %v", err)
@@ -203,7 +209,7 @@ func (c *addressManager) runInternal(stopChan <-chan struct{}, subscribe subscri
 		case <-addressSyncTimer.C:
 			if subscribed {
 				klog.V(5).Info("Node IP manager calling sync() explicitly")
-				c.sync()
+				c.Sync()
 			} else {
 				if subscribed, addrChan, err = subscribe(); err != nil {
 					klog.Errorf("Error during netlink re-subscribe for IP Manager: %v", err)
@@ -216,7 +222,7 @@ func (c *addressManager) runInternal(stopChan <-chan struct{}, subscribe subscri
 	}
 }
 
-func (c *addressManager) getNetlinkAddrSubFunc(stopChan <-chan struct{}) func() (bool, chan netlink.AddrUpdate, error) {
+func (c *AddressManager) getNetlinkAddrSubFunc(stopChan <-chan struct{}) func() (bool, chan netlink.AddrUpdate, error) {
 	addrSubscribeOptions := netlink.AddrSubscribeOptions{
 		ErrorCallback: func(err error) {
 			klog.Errorf("Failed during AddrSubscribe callback: %v", err)
@@ -229,13 +235,13 @@ func (c *addressManager) getNetlinkAddrSubFunc(stopChan <-chan struct{}) func() 
 			return false, nil, err
 		}
 		// sync the manager with current addresses on the node
-		c.sync()
+		c.Sync()
 		return true, addrChan, nil
 	}
 }
 
 // addHandlerForPrimaryAddrChange handles reconfiguration of a node primary IP address change
-func (c *addressManager) addHandlerForPrimaryAddrChange() {
+func (c *AddressManager) addHandlerForPrimaryAddrChange() {
 	// Add an event handler to the node informer. This is needed for cases where users first update the node's IP
 	// address but only later update kubelet configuration and restart kubelet (which in turn will update the reported
 	// IP address inside the node's status field).
@@ -251,9 +257,9 @@ func (c *addressManager) addHandlerForPrimaryAddrChange() {
 }
 
 // updates OVN's EncapIP if the node IP changed
-func (c *addressManager) handleNodePrimaryAddrChange() {
-	c.Lock()
-	defer c.Unlock()
+func (c *AddressManager) handleNodePrimaryAddrChange() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 	nodePrimaryAddrChanged, err := c.nodePrimaryAddrChanged()
 	if err != nil {
 		klog.Errorf("Address Manager failed to check node primary address change: %v", err)
@@ -267,12 +273,12 @@ func (c *addressManager) handleNodePrimaryAddrChange() {
 
 // updateNodeAddressAnnotations updates all relevant annotations for the node including
 // k8s.ovn.org/host-cidrs, k8s.ovn.org/node-primary-ifaddr, k8s.ovn.org/l3-gateway-config.
-func (c *addressManager) updateNodeAddressAnnotations() error {
+func (c *AddressManager) updateNodeAddressAnnotations() error {
 	var err error
 	var ifAddrs []*net.IPNet
 
 	// Get node information
-	node, err := c.watchFactory.GetNode(c.nodeName)
+	node, err := c.watchFactory.GetNode(c.NodeName)
 	if err != nil {
 		return err
 	}
@@ -316,7 +322,7 @@ func (c *addressManager) updateNodeAddressAnnotations() error {
 	return nil
 }
 
-func (c *addressManager) updateHostCIDRs(ifAddrs []*net.IPNet) error {
+func (c *AddressManager) updateHostCIDRs(ifAddrs []*net.IPNet) error {
 	if config.OvnKubeNode.Mode == types.NodeModeDPU {
 		// For DPU mode, here we need to use the DPU host's IP address which is the tenant cluster's
 		// host internal IP address instead.
@@ -326,25 +332,25 @@ func (c *addressManager) updateHostCIDRs(ifAddrs []*net.IPNet) error {
 		return util.SetNodeHostCIDRs(c.nodeAnnotator, nodeAddrSet)
 	}
 
-	return util.SetNodeHostCIDRs(c.nodeAnnotator, c.cidrs)
+	return util.SetNodeHostCIDRs(c.nodeAnnotator, c.Cidrs)
 }
 
-func (c *addressManager) assignCIDRs(nodeHostCIDRs sets.Set[string]) bool {
-	c.Lock()
-	defer c.Unlock()
+func (c *AddressManager) assignCIDRs(nodeHostCIDRs sets.Set[string]) bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	if nodeHostCIDRs.Equal(c.cidrs) {
+	if nodeHostCIDRs.Equal(c.Cidrs) {
 		return false
 	}
-	c.cidrs = nodeHostCIDRs
+	c.Cidrs = nodeHostCIDRs
 	return true
 }
 
-func (c *addressManager) doNodeHostCIDRsMatch() bool {
-	c.Lock()
-	defer c.Unlock()
+func (c *AddressManager) doNodeHostCIDRsMatch() bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	node, err := c.watchFactory.GetNode(c.nodeName)
+	node, err := c.watchFactory.GetNode(c.NodeName)
 	if err != nil {
 		klog.Errorf("Unable to get node from informer")
 		return false
@@ -357,18 +363,18 @@ func (c *addressManager) doNodeHostCIDRsMatch() bool {
 		return false
 	}
 
-	return nodeHostAddresses.Equal(c.cidrs)
+	return nodeHostAddresses.Equal(c.Cidrs)
 }
 
 // nodePrimaryAddrChanged returns false if there is an error or if the IP does
 // match, otherwise it returns true and updates the current primary IP address.
-func (c *addressManager) nodePrimaryAddrChanged() (bool, error) {
-	node, err := c.watchFactory.GetNode(c.nodeName)
+func (c *AddressManager) nodePrimaryAddrChanged() (bool, error) {
+	node, err := c.watchFactory.GetNode(c.NodeName)
 	if err != nil {
 		return false, err
 	}
 	// check to see if ips on the node differ from what we stored
-	// in addressManager and it's an address that is known locally
+	// in AddressManager and it's an address that is known locally
 	nodePrimaryAddrStr, err := util.GetNodePrimaryIP(node)
 	if err != nil {
 		return false, err
@@ -380,7 +386,7 @@ func (c *addressManager) nodePrimaryAddrChanged() (bool, error) {
 	}
 
 	var exists bool
-	for _, hostCIDR := range c.cidrs.UnsortedList() {
+	for _, hostCIDR := range c.Cidrs.UnsortedList() {
 		ip, _, err := net.ParseCIDR(hostCIDR)
 		if err != nil {
 			klog.Errorf("Node IP: failed to parse node address %q. Unable to detect if node primary address changed: %v",
@@ -403,7 +409,7 @@ func (c *addressManager) nodePrimaryAddrChanged() (bool, error) {
 
 // detects if the IP is valid for a node
 // excludes things like local IPs, mgmt port ip, special masquerade IP and Egress IPs for non-ovs type interfaces
-func (c *addressManager) isValidNodeIP(addr net.IP, linkIndex int) bool {
+func (c *AddressManager) isValidNodeIP(addr net.IP, linkIndex int) bool {
 	if addr == nil {
 		return false
 	}
@@ -414,7 +420,7 @@ func (c *addressManager) isValidNodeIP(addr net.IP, linkIndex int) bool {
 		return false
 	}
 	// check CDN management port
-	mgmtPortAddress, _ := util.MatchFirstIPNetFamily(utilnet.IsIPv6(addr), c.mgmtPort.GetAddresses())
+	mgmtPortAddress, _ := util.MatchFirstIPNetFamily(utilnet.IsIPv6(addr), c.MgmtPort.GetAddresses())
 	if mgmtPortAddress != nil && addr.Equal(mgmtPortAddress.IP) {
 		return false
 	}
@@ -466,7 +472,7 @@ func (c *addressManager) isValidNodeIP(addr net.IP, linkIndex int) bool {
 	return true
 }
 
-func (c *addressManager) sync() {
+func (c *AddressManager) Sync() {
 	if config.OvnKubeNode.Mode == types.NodeModeDPU {
 		return
 	}
@@ -514,8 +520,8 @@ func (c *addressManager) sync() {
 // getSecondaryHostEgressIPs returns the set of egress IPs that are assigned to standard linux interfaces (non ovs type). The
 // addresses are used to support Egress IP multi NIC feature. The addresses must not be included in address manager
 // because the addresses are only to support Egress IP multi NIC feature and must not be exposed via host-cidrs annot.
-func (c *addressManager) getSecondaryHostEgressIPs() (sets.Set[string], error) {
-	node, err := c.watchFactory.GetNode(c.nodeName)
+func (c *AddressManager) getSecondaryHostEgressIPs() (sets.Set[string], error) {
+	node, err := c.watchFactory.GetNode(c.NodeName)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get Node from informer: %v", err)
 	}
@@ -529,8 +535,8 @@ func (c *addressManager) getSecondaryHostEgressIPs() (sets.Set[string], error) {
 	return eipAddrs, nil
 }
 
-func (c *addressManager) getPrimaryHostEgressIPs() (sets.Set[string], error) {
-	node, err := c.watchFactory.GetNode(c.nodeName)
+func (c *AddressManager) getPrimaryHostEgressIPs() (sets.Set[string], error) {
+	node, err := c.watchFactory.GetNode(c.NodeName)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get Node from informer: %v", err)
 	}
@@ -546,7 +552,7 @@ func (c *addressManager) getPrimaryHostEgressIPs() (sets.Set[string], error) {
 }
 
 // updateOVNEncapIPAndReconnect updates encap IP to OVS when the node primary IP changed.
-func (c *addressManager) updateOVNEncapIPAndReconnect(newIP net.IP) {
+func (c *AddressManager) updateOVNEncapIPAndReconnect(newIP net.IP) {
 	checkCmd := []string{
 		"get",
 		"Open_vSwitch",
@@ -590,12 +596,12 @@ func (c *addressManager) updateOVNEncapIPAndReconnect(newIP net.IP) {
 	// Update node-encap-ips annotation
 	encapIPList := sets.New[string](config.Default.EffectiveEncapIP)
 	if err := util.SetNodeEncapIPs(c.nodeAnnotator, encapIPList); err != nil {
-		klog.Errorf("Failed to set node-encap-ips annotation for node %s: %v", c.nodeName, err)
+		klog.Errorf("Failed to set node-encap-ips annotation for node %s: %v", c.NodeName, err)
 		return
 	}
 
 	if err := c.nodeAnnotator.Run(); err != nil {
-		klog.Errorf("Failed to set node %s annotations: %v", c.nodeName, err)
+		klog.Errorf("Failed to set node %s annotations: %v", c.NodeName, err)
 		return
 	}
 }

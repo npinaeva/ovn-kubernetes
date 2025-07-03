@@ -17,6 +17,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/informer"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/addressmanager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/bridgeconfig"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/egressipgw"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
@@ -50,7 +51,7 @@ type gateway struct {
 	// nodePortWatcher is used in Local+Shared GW modes to handle nodePort flows in shared OVS bridge
 	nodePortWatcher      informer.ServiceAndEndpointsEventHandler
 	openflowManager      *openflowManager
-	nodeIPManager        *addressManager
+	nodeIPManager        *addressmanager.AddressManager
 	bridgeEIPAddrManager *egressipgw.BridgeEIPAddrManager
 	initFunc             func() error
 	readyFunc            func() (bool, error)
@@ -514,7 +515,7 @@ func (g *gateway) addAllServices() []error {
 }
 
 func (g *gateway) updateSNATRules() error {
-	subnets := util.IPsToNetworkIPs(g.nodeIPManager.mgmtPort.GetAddresses()...)
+	subnets := util.IPsToNetworkIPs(g.nodeIPManager.MgmtPort.GetAddresses()...)
 
 	if g.GetDefaultPodNetworkAdvertised() || config.Gateway.Mode != config.GatewayModeLocal {
 		return delLocalGatewayPodSubnetNATRules(subnets...)

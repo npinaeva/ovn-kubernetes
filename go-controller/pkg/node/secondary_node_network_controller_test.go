@@ -411,7 +411,7 @@ var _ = Describe("SecondaryNodeNetworkController: UserDefinedPrimaryNetwork Gate
 			// we cannot start the shared gw directly because it will spawn a goroutine that may not be bound to the test netns
 			// Start does two things, starts nodeIPManager which spawns a go routine and also starts openflow manager by spawning a go routine
 			//sharedGw.Start()
-			localGw.nodeIPManager.sync()
+			localGw.nodeIPManager.Sync()
 			// we cannot start openflow manager directly because it spawns a go routine
 			// FIXME: extract openflow manager func from the spawning of a go routine so it can be called directly below.
 			err = localGw.openflowManager.updateBridgeFlowCache(localGw.nodeIPManager.ListAddresses())

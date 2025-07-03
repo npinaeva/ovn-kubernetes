@@ -1,4 +1,4 @@
-package node
+package addressmanager
 
 import (
 	"context"
@@ -51,7 +51,7 @@ func nodeHasAddress(fakeClient kubernetes.Interface, nodeName string, ipNet *net
 
 type testCtx struct {
 	ns           ns.NetNS
-	ipManager    *addressManager
+	ipManager    *AddressManager
 	watchFactory factory.NodeWatchFactory
 	fakeClient   kubernetes.Interface
 	doneWg       *sync.WaitGroup
@@ -92,7 +92,7 @@ var _ = Describe("Node IP Handler event tests", func() {
 		subscribe := func() (bool, chan netlink.AddrUpdate, error) {
 			defer atomic.StoreUint32(&tc.subscribed, 1)
 			tc.addrChan = make(chan netlink.AddrUpdate)
-			tc.ipManager.sync()
+			tc.ipManager.Sync()
 			return true, tc.addrChan, nil
 		}
 		tc.doneWg.Add(1)
