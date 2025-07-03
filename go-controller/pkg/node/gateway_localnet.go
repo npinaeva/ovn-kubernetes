@@ -40,18 +40,6 @@ func initLocalGateway(hostSubnets []*net.IPNet, mgmtPort managementport.Interfac
 	return nil
 }
 
-func getGatewayFamilyAddrs(gatewayIfAddrs []*net.IPNet) (string, string) {
-	var gatewayIPv4, gatewayIPv6 string
-	for _, gatewayIfAddr := range gatewayIfAddrs {
-		if utilnet.IsIPv6(gatewayIfAddr.IP) {
-			gatewayIPv6 = gatewayIfAddr.IP.String()
-		} else {
-			gatewayIPv4 = gatewayIfAddr.IP.String()
-		}
-	}
-	return gatewayIPv4, gatewayIPv6
-}
-
 func getLocalAddrs() (map[string]net.IPNet, error) {
 	localAddrSet := make(map[string]net.IPNet)
 	addrs, err := net.InterfaceAddrs()

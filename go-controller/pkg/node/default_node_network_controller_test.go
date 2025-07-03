@@ -811,7 +811,7 @@ var _ = Describe("Node", func() {
 					err = setupPMTUDNFTChain()
 					Expect(err).NotTo(HaveOccurred())
 					nc.Gateway = &gateway{
-						openflowManager: &openflowManager{
+						bridgeManager: &openflowManager{
 							flowCache:     map[string][]string{},
 							defaultBridge: bridgeconfig.TestDefaultBridgeConfig(),
 						},
@@ -836,7 +836,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v4 { 169.254.254.61 }
 					Expect(err).NotTo(HaveOccurred())
 					gw := nc.Gateway.(*gateway)
 					By("start up should add openflow rules for remote node")
-					flows := gw.openflowManager.getFlowsByKey(getPMTUDKey(remoteNodeName))
+					flows := gw.bridgeManager.getFlowsByKey(getPMTUDKey(remoteNodeName))
 					Expect(flows).To(HaveLen(1))
 
 					By("deleting the remote node should remove the nftables element")
@@ -845,7 +845,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v4 { 169.254.254.61 }
 					Eventually(func() error {
 						return nodenft.MatchNFTRules(v4PMTUDNFTRules, nft.Dump())
 					}).WithTimeout(2 * time.Second).ShouldNot(HaveOccurred())
-					Eventually(func() []string { return gw.openflowManager.getFlowsByKey(getPMTUDKey(remoteNodeName)) }).WithTimeout(2 * time.Second).Should(BeEmpty())
+					Eventually(func() []string { return gw.bridgeManager.getFlowsByKey(getPMTUDKey(remoteNodeName)) }).WithTimeout(2 * time.Second).Should(BeEmpty())
 					return nil
 
 				}
@@ -916,7 +916,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v4 { 169.254.254.61 }
 					err = setupPMTUDNFTChain()
 					Expect(err).NotTo(HaveOccurred())
 					nc.Gateway = &gateway{
-						openflowManager: &openflowManager{
+						bridgeManager: &openflowManager{
 							flowCache:     map[string][]string{},
 							defaultBridge: bridgeconfig.TestDefaultBridgeConfig(),
 						},
@@ -941,7 +941,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v4 { 169.254.253.61 }
 					Expect(err).NotTo(HaveOccurred())
 					gw := nc.Gateway.(*gateway)
 					By("start up should add openflow rules for remote node")
-					flows := gw.openflowManager.getFlowsByKey(getPMTUDKey(remoteNodeName))
+					flows := gw.bridgeManager.getFlowsByKey(getPMTUDKey(remoteNodeName))
 					Expect(flows).To(HaveLen(1))
 
 					By("deleting the remote node should remove the nftables element")
@@ -950,7 +950,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v4 { 169.254.253.61 }
 					Eventually(func() error {
 						return nodenft.MatchNFTRules(v4PMTUDNFTRules, nft.Dump())
 					}).WithTimeout(2 * time.Second).ShouldNot(HaveOccurred())
-					Eventually(func() []string { return gw.openflowManager.getFlowsByKey(getPMTUDKey(remoteNodeName)) }).WithTimeout(2 * time.Second).Should(BeEmpty())
+					Eventually(func() []string { return gw.bridgeManager.getFlowsByKey(getPMTUDKey(remoteNodeName)) }).WithTimeout(2 * time.Second).Should(BeEmpty())
 					return nil
 
 				}
@@ -1063,7 +1063,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v4 { 169.254.253.61 }
 					err = setupPMTUDNFTChain()
 					Expect(err).NotTo(HaveOccurred())
 					nc.Gateway = &gateway{
-						openflowManager: &openflowManager{
+						bridgeManager: &openflowManager{
 							flowCache:     map[string][]string{},
 							defaultBridge: bridgeconfig.TestDefaultBridgeConfig(),
 						},
@@ -1088,7 +1088,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v6 { 2001:db8:1::4 }
 					Expect(err).NotTo(HaveOccurred())
 					gw := nc.Gateway.(*gateway)
 					By("start up should add openflow rules for remote node")
-					flows := gw.openflowManager.getFlowsByKey(getPMTUDKey(remoteNodeName))
+					flows := gw.bridgeManager.getFlowsByKey(getPMTUDKey(remoteNodeName))
 					Expect(flows).To(HaveLen(1))
 
 					By("deleting the remote node should remove the nftables element")
@@ -1097,7 +1097,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v6 { 2001:db8:1::4 }
 					Eventually(func() error {
 						return nodenft.MatchNFTRules(v6PMTUDNFTRules, nft.Dump())
 					}).WithTimeout(2 * time.Second).ShouldNot(HaveOccurred())
-					Eventually(func() []string { return gw.openflowManager.getFlowsByKey(getPMTUDKey(remoteNodeName)) }).WithTimeout(2 * time.Second).Should(BeEmpty())
+					Eventually(func() []string { return gw.bridgeManager.getFlowsByKey(getPMTUDKey(remoteNodeName)) }).WithTimeout(2 * time.Second).Should(BeEmpty())
 					return nil
 				}
 
@@ -1167,7 +1167,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v6 { 2001:db8:1::4 }
 					err = setupPMTUDNFTChain()
 					Expect(err).NotTo(HaveOccurred())
 					nc.Gateway = &gateway{
-						openflowManager: &openflowManager{
+						bridgeManager: &openflowManager{
 							flowCache:     map[string][]string{},
 							defaultBridge: bridgeconfig.TestDefaultBridgeConfig(),
 						},
@@ -1192,7 +1192,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v6 { 2002:db8:1::4 }
 					Expect(err).NotTo(HaveOccurred())
 					gw := nc.Gateway.(*gateway)
 					By("start up should add openflow rules for remote node")
-					flows := gw.openflowManager.getFlowsByKey(getPMTUDKey(remoteNodeName))
+					flows := gw.bridgeManager.getFlowsByKey(getPMTUDKey(remoteNodeName))
 					Expect(flows).To(HaveLen(1))
 
 					By("deleting the remote node should remove the nftables element")
@@ -1201,7 +1201,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v6 { 2002:db8:1::4 }
 					Eventually(func() error {
 						return nodenft.MatchNFTRules(v6PMTUDNFTRules, nft.Dump())
 					}).WithTimeout(2 * time.Second).ShouldNot(HaveOccurred())
-					Eventually(func() []string { return gw.openflowManager.getFlowsByKey(getPMTUDKey(remoteNodeName)) }).WithTimeout(2 * time.Second).Should(BeEmpty())
+					Eventually(func() []string { return gw.bridgeManager.getFlowsByKey(getPMTUDKey(remoteNodeName)) }).WithTimeout(2 * time.Second).Should(BeEmpty())
 					return nil
 				}
 
@@ -1328,7 +1328,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v6 { 2002:db8:1::4 }
 					err = setupPMTUDNFTChain()
 					Expect(err).NotTo(HaveOccurred())
 					nc.Gateway = &gateway{
-						openflowManager: &openflowManager{
+						bridgeManager: &openflowManager{
 							flowCache:     map[string][]string{},
 							defaultBridge: bridgeconfig.TestDefaultBridgeConfig(),
 						},
@@ -1449,7 +1449,7 @@ add element inet ovn-kubernetes no-pmtud-remote-node-ips-v6 { 2002:db8:1::4 }
 					err = setupPMTUDNFTChain()
 					Expect(err).NotTo(HaveOccurred())
 					nc.Gateway = &gateway{
-						openflowManager: &openflowManager{
+						bridgeManager: &openflowManager{
 							flowCache:     map[string][]string{},
 							defaultBridge: bridgeconfig.TestDefaultBridgeConfig(),
 						},

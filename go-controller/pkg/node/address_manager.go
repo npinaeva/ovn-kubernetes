@@ -1,7 +1,7 @@
 //go:build linux
 // +build linux
 
-package addressmanager
+package node
 
 import (
 	"fmt"
@@ -20,7 +20,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/bridgeconfig"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/managementport"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -38,15 +37,15 @@ type AddressManager struct {
 	syncPeriod time.Duration
 	// compare node primary IP change
 	nodePrimaryAddr net.IP
-	gatewayBridge   *bridgeconfig.BridgeConfiguration
+	bridgeManager   *BridgeManager
 
 	OnChanged func()
 	mutex     sync.Mutex
 }
 
 // initializes a new address manager which will hold all the IPs on a node
-func NewAddressManager(nodeName string, k kube.Interface, mgmtPort managementport.Interface, watchFactory factory.NodeWatchFactory, gwBridge *bridgeconfig.BridgeConfiguration) *AddressManager {
-	return newAddressManagerInternal(nodeName, k, mgmtPort, watchFactory, gwBridge, true)
+func NewAddressManager(nodeName string, k kube.Interface, mgmtPort managementport.Interface, watchFactory factory.NodeWatchFactory, bridgeManager *BridgeManager) *AddressManager {
+	return newAddressManagerInternal(nodeName, k, mgmtPort, watchFactory, bridgeManager, true)
 }
 
 func NewTestAddressManager(nodeName string, k kube.Interface, watchFactory factory.NodeWatchFactory, cidrs sets.Set[string]) *AddressManager {
@@ -58,13 +57,13 @@ func NewTestAddressManager(nodeName string, k kube.Interface, watchFactory facto
 // newAddressManagerInternal creates a new address manager; this function is
 // only expose for testcases to disable netlink subscription to ensure
 // reproducibility of unit tests.
-func newAddressManagerInternal(nodeName string, k kube.Interface, mgmtPort managementport.Interface, watchFactory factory.NodeWatchFactory, gwBridge *bridgeconfig.BridgeConfiguration, useNetlink bool) *AddressManager {
+func newAddressManagerInternal(nodeName string, k kube.Interface, mgmtPort managementport.Interface, watchFactory factory.NodeWatchFactory, bridgeManager *BridgeManager, useNetlink bool) *AddressManager {
 	mgr := &AddressManager{
 		nodeName:      nodeName,
 		watchFactory:  watchFactory,
 		Cidrs:         sets.New[string](),
 		MgmtPort:      mgmtPort,
-		gatewayBridge: gwBridge,
+		bridgeManager: bridgeManager,
 		OnChanged:     func() {},
 		useNetlink:    useNetlink,
 		syncPeriod:    30 * time.Second,
@@ -81,7 +80,7 @@ func newAddressManagerInternal(nodeName string, k kube.Interface, mgmtPort manag
 		}
 		if useNetlink {
 			// get updated interface IP addresses for the gateway bridge
-			ifAddrs, err = gwBridge.UpdateInterfaceIPAddresses(node)
+			ifAddrs, err = mgr.bridgeManager.DefaultBridge.UpdateInterfaceIPAddresses(node)
 			if err != nil {
 				klog.Errorf("Failed to obtain interface IP addresses for node %s: %v", nodeName, err)
 				return nil
@@ -285,7 +284,7 @@ func (c *AddressManager) updateNodeAddressAnnotations() error {
 
 	if c.useNetlink {
 		// get updated interface IP addresses for the gateway bridge
-		ifAddrs, err = c.gatewayBridge.UpdateInterfaceIPAddresses(node)
+		ifAddrs, err = c.bridgeManager.DefaultBridge.UpdateInterfaceIPAddresses(node)
 		if err != nil {
 			return err
 		}
@@ -444,8 +443,7 @@ func (c *AddressManager) isValidNodeIP(addr net.IP, linkIndex int) bool {
 		if util.IsNetworkSegmentationSupportEnabled() && config.OVNKubernetesFeature.EnableInterconnect && config.Gateway.Mode != config.GatewayModeDisabled {
 			// Two methods to lookup EIPs assigned to the gateway bridge. Fast path from a shared cache or slow path from node annotations.
 			// At startup, gateway bridge cache gets sync
-			eipMarkIPs := c.gatewayBridge.GetEIPMarkIPs()
-			if eipMarkIPs != nil && eipMarkIPs.HasSyncdOnce() && eipMarkIPs.IsIPPresent(addr) {
+			if c.bridgeManager.DefaultBridge.EIPMarkLookup(addr) {
 				return false
 			} else {
 				if eipAddresses, err := c.getPrimaryHostEgressIPs(); err != nil {
@@ -604,6 +602,20 @@ func (c *AddressManager) updateOVNEncapIPAndReconnect(newIP net.IP) {
 		klog.Errorf("Failed to set node %s annotations: %v", c.nodeName, err)
 		return
 	}
+}
+
+func (c *AddressManager) UpdateSNATRules() error {
+	subnets := util.IPsToNetworkIPs(c.MgmtPort.GetAddresses()...)
+
+	if c.bridgeManager.DefaultBridge.GetNetworkConfig(types.DefaultNetworkName).Advertised.Load() || config.Gateway.Mode != config.GatewayModeLocal {
+		return delLocalGatewayPodSubnetNATRules(subnets...)
+	}
+
+	return addLocalGatewayPodSubnetNATRules(subnets...)
+}
+
+func (c *AddressManager) UpdateBridgeFlowCache() error {
+	return c.bridgeManager.UpdateBridgeFlowCache(c.ListAddresses())
 }
 
 func getSupportedIPFamily() int {

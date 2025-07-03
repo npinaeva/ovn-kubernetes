@@ -1508,7 +1508,7 @@ func (nc *DefaultNodeNetworkController) addOrUpdateNode(node *corev1.Node) error
 	}
 
 	gw := nc.Gateway.(*gateway)
-	gw.openflowManager.updateBridgePMTUDFlowCache(getPMTUDKey(node.Name), addrs)
+	gw.bridgeManager.UpdateBridgePMTUDFlowCache(getPMTUDKey(node.Name), addrs)
 
 	if len(nftElems) > 0 {
 		if err := nodenft.UpdateNFTElements(nftElems); err != nil {
@@ -1545,7 +1545,7 @@ func removePMTUDNodeNFTRules(nodeIPs []net.IP) error {
 
 func (nc *DefaultNodeNetworkController) deleteNode(node *corev1.Node) {
 	gw := nc.Gateway.(*gateway)
-	gw.openflowManager.deleteFlowsByKey(getPMTUDKey(node.Name))
+	gw.bridgeManager.DeleteDefaultBridgeFlows(getPMTUDKey(node.Name))
 	ipsToRemove := make([]net.IP, 0)
 	for _, address := range node.Status.Addresses {
 		if address.Type != corev1.NodeInternalIP {

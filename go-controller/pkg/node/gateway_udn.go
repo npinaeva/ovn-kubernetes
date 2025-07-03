@@ -125,10 +125,10 @@ func NewUserDefinedNetworkGateway(netInfo util.NetInfo, node *corev1.Node, nodeL
 		return nil, fmt.Errorf("unable to dereference default node network controller gateway object")
 	}
 
-	if gw.openflowManager == nil {
+	if gw.bridgeManager == nil {
 		return nil, fmt.Errorf("openflow manager has not been provided for network: %s", netInfo.GetNetworkName())
 	}
-	intfName := gw.openflowManager.defaultBridge.GetGatewayIface()
+	intfName := gw.bridgeManager.DefaultBridge.GetGatewayIface()
 	link, err := util.GetNetLinkOps().LinkByName(intfName)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get link for %s, error: %v", intfName, err)
@@ -202,7 +202,7 @@ func (udng *UserDefinedNetworkGateway) addMarkChain() error {
 // AddNetwork will be responsible to create all plumbings
 // required by this UDN on the gateway side
 func (udng *UserDefinedNetworkGateway) AddNetwork() error {
-	if udng.openflowManager == nil {
+	if udng.bridgeManager == nil {
 		return fmt.Errorf("openflow manager has not been provided for network: %s", udng.NetInfo.GetNetworkName())
 	}
 	// port is created first and its MAC address configured. The IP(s) on that link are added after enslaving to a VRF device (addUDNManagementPortIPs)
@@ -252,18 +252,18 @@ func (udng *UserDefinedNetworkGateway) AddNetwork() error {
 	if err != nil {
 		return fmt.Errorf("failed to get node subnets for network %s: %w", udng.GetNetworkName(), err)
 	}
-	if err = udng.openflowManager.addNetwork(udng.NetInfo, nodeSubnets, udng.masqCTMark, udng.pktMark, udng.v6MasqIPs, udng.v4MasqIPs); err != nil {
+	if err = udng.bridgeManager.addNetwork(udng.NetInfo, nodeSubnets, udng.masqCTMark, udng.pktMark, udng.v6MasqIPs, udng.v4MasqIPs); err != nil {
 		return fmt.Errorf("could not add network %s: %v", udng.GetNetworkName(), err)
 	}
 
 	waiter := newStartupWaiterWithTimeout(waitForPatchPortTimeout)
 	readyFunc := func() (bool, error) {
-		if err := udng.openflowManager.defaultBridge.SetNetworkOfPatchPort(udng.GetNetworkName()); err != nil {
+		if err := udng.bridgeManager.DefaultBridge.SetNetworkOfPatchPort(udng.GetNetworkName()); err != nil {
 			klog.V(3).Infof("Failed to set network %s's openflow ports for default bridge; error: %v", udng.GetNetworkName(), err)
 			return false, nil
 		}
-		if udng.openflowManager.externalGatewayBridge != nil {
-			if err := udng.openflowManager.externalGatewayBridge.SetNetworkOfPatchPort(udng.GetNetworkName()); err != nil {
+		if udng.bridgeManager.ExternalGatewayBridge != nil {
+			if err := udng.bridgeManager.ExternalGatewayBridge.SetNetworkOfPatchPort(udng.GetNetworkName()); err != nil {
 				klog.V(3).Infof("Failed to set network %s's openflow ports for secondary bridge; error: %v", udng.GetNetworkName(), err)
 				return false, nil
 			}
@@ -309,8 +309,8 @@ func (udng *UserDefinedNetworkGateway) DelNetwork() error {
 		return err
 	}
 	// delete the openflows for this network
-	if udng.openflowManager != nil {
-		udng.openflowManager.delNetwork(udng.NetInfo)
+	if udng.bridgeManager != nil {
+		udng.bridgeManager.delNetwork(udng.NetInfo)
 		if err := udng.gateway.Reconcile(); err != nil {
 			return fmt.Errorf("failed to reconcile default gateway for network %s, err: %v", udng.GetNetworkName(), err)
 		}
@@ -797,14 +797,14 @@ func (udng *UserDefinedNetworkGateway) doReconcile() error {
 	klog.Infof("Reconciling gateway with updates for UDN %s", udng.GetNetworkName())
 
 	// shouldn't happen
-	if udng.openflowManager == nil || udng.openflowManager.defaultBridge == nil {
+	if udng.bridgeManager == nil || udng.bridgeManager.DefaultBridge == nil {
 		return fmt.Errorf("openflow manager with default bridge configuration has not been provided for network %s", udng.GetNetworkName())
 	}
 
 	udng.updateAdvertisementStatus()
 
 	// update bridge configuration
-	netConfig := udng.openflowManager.defaultBridge.GetNetworkConfig(udng.GetNetworkName())
+	netConfig := udng.bridgeManager.DefaultBridge.GetNetworkConfig(udng.GetNetworkName())
 	if netConfig == nil {
 		return fmt.Errorf("missing bridge configuration for network %s", udng.GetNetworkName())
 	}
@@ -822,11 +822,11 @@ func (udng *UserDefinedNetworkGateway) doReconcile() error {
 	// table=1, n_packets=0, n_bytes=0, priority=16,ip,nw_dst=128.192.0.2 actions=LOCAL (Both gateway modes)
 	// table=1, n_packets=0, n_bytes=0, priority=15,ip,nw_dst=128.192.0.0/14 actions=output:3 (shared gateway mode)
 	// necessary service isolation flows based on whether network is advertised or not
-	if err := udng.openflowManager.updateBridgeFlowCache(udng.nodeIPManager.ListAddresses()); err != nil {
+	if err := udng.nodeIPManager.UpdateBridgeFlowCache(); err != nil {
 		return fmt.Errorf("error while updating logical flow for UDN %s: %s", udng.GetNetworkName(), err)
 	}
 	// let's sync these flows immediately
-	udng.openflowManager.requestFlowSync()
+	udng.bridgeManager.requestFlowSync()
 
 	if err := udng.updateAdvertisedUDNIsolationRules(); err != nil {
 		return fmt.Errorf("error while updating advertised UDN isolation rules for network %s: %w", udng.GetNetworkName(), err)

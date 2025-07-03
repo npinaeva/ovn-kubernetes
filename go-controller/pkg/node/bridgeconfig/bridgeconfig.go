@@ -2,6 +2,7 @@ package bridgeconfig
 
 import (
 	"fmt"
+	utilnet "k8s.io/utils/net"
 	"net"
 	"strings"
 	"sync"
@@ -420,6 +421,24 @@ func (b *BridgeConfiguration) GetIPs() []*net.IPNet {
 	return b.ips
 }
 
+func (b *BridgeConfiguration) GetIPsPerFamily() (string, string) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	return getFamilyAddrs(b.ips)
+}
+
+func getFamilyAddrs(ips []*net.IPNet) (string, string) {
+	var gatewayIPv4, gatewayIPv6 string
+	for _, gatewayIfAddr := range ips {
+		if utilnet.IsIPv6(gatewayIfAddr.IP) {
+			gatewayIPv6 = gatewayIfAddr.IP.String()
+		} else {
+			gatewayIPv4 = gatewayIfAddr.IP.String()
+		}
+	}
+	return gatewayIPv4, gatewayIPv6
+}
+
 func (b *BridgeConfiguration) GetBridgeName() string {
 	return b.bridgeName
 }
@@ -461,10 +480,10 @@ func (b *BridgeConfiguration) GetOfPortHost() string {
 	return b.ofPortHost
 }
 
-func (b *BridgeConfiguration) GetEIPMarkIPs() *egressipgw.MarkIPsCache {
+func (b *BridgeConfiguration) EIPMarkLookup(ip net.IP) bool {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
-	return b.eipMarkIPs
+	return b.eipMarkIPs != nil && b.eipMarkIPs.HasSyncdOnce() && b.eipMarkIPs.IsIPPresent(ip)
 }
 
 func (b *BridgeConfiguration) SetEIPMarkIPs(eipMarkIPs *egressipgw.MarkIPsCache) {

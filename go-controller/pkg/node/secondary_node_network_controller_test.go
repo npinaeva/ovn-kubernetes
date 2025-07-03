@@ -116,7 +116,7 @@ var _ = Describe("SecondaryNodeNetworkController", func() {
 		Expect(err).NotTo(HaveOccurred())
 		getCreationFakeCommands(fexec, "ovn-k8s-mp3", mgtPortMAC, NetInfo.GetNetworkName(), "worker1", NetInfo.MTU())
 		ofm := getDummyOpenflowManager()
-		controller, err := NewSecondaryNodeNetworkController(&cnnci, NetInfo, nil, nil, &gateway{openflowManager: ofm})
+		controller, err := NewSecondaryNodeNetworkController(&cnnci, NetInfo, nil, nil, &gateway{bridgeManager: ofm})
 		Expect(err).NotTo(HaveOccurred())
 		err = controller.Start(context.Background())
 		Expect(err).To(HaveOccurred()) // we don't have the gateway pieces setup so its expected to fail here
@@ -414,9 +414,9 @@ var _ = Describe("SecondaryNodeNetworkController: UserDefinedPrimaryNetwork Gate
 			localGw.nodeIPManager.Sync()
 			// we cannot start openflow manager directly because it spawns a go routine
 			// FIXME: extract openflow manager func from the spawning of a go routine so it can be called directly below.
-			err = localGw.openflowManager.updateBridgeFlowCache(localGw.nodeIPManager.ListAddresses())
+			err = localGw.nodeIPManager.UpdateBridgeFlowCache()
 			Expect(err).NotTo(HaveOccurred())
-			localGw.openflowManager.syncFlows()
+			localGw.bridgeManager.syncFlows()
 
 			By("creating secondary network controller for user defined primary network")
 			cnnci := CommonNodeNetworkControllerInfo{name: nodeName, watchFactory: &factoryMock}

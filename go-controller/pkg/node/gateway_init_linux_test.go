@@ -392,7 +392,7 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 			sharedGw.nodeIPManager.Sync()
 			// we cannot start openflow manager directly because it spawns a go routine
 			// FIXME: extract openflow manager func from the spawning of a go routine so it can be called directly below.
-			sharedGw.openflowManager.syncFlows()
+			sharedGw.bridgeManager.syncFlows()
 			// Verify the code moved eth0's IP address, MAC, and routes
 			// over to breth0
 			l, err := netlink.LinkByName("breth0")
@@ -646,7 +646,7 @@ func shareGatewayInterfaceDPUTest(app *cli.App, testNS ns.NetNS,
 			Cmd:    "ovs-vsctl --timeout=15 get Interface " + hostRep + " Name",
 			Output: hostRep,
 		})
-		// newGatewayOpenFlowManager
+		// newOpenFlowManager
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
 			Cmd:    "ovs-vsctl --timeout=15 get Interface patch-" + brphys + "_node1-to-br-int ofport",
 			Output: "5",
@@ -668,7 +668,7 @@ func shareGatewayInterfaceDPUTest(app *cli.App, testNS ns.NetNS,
 			Cmd:    "ovs-vsctl --timeout=15 get Interface pf0hpf Name",
 			Output: hostRep,
 		})
-		// newGatewayOpenFlowManager
+		// newOpenFlowManager
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
 			Cmd:    "ovs-vsctl --timeout=15 get interface " + hostRep + " ofport",
 			Output: "9",
@@ -780,7 +780,7 @@ func shareGatewayInterfaceDPUTest(app *cli.App, testNS ns.NetNS,
 			sharedGw.nodeIPManager.Sync()
 			// we cannot start openflow manager directly because it spawns a go routine
 			// FIXME: extract openflow manager func from the spawning of a go routine so it can be called directly below.
-			sharedGw.openflowManager.syncFlows()
+			sharedGw.bridgeManager.syncFlows()
 
 			// check that the masquerade route was not added
 			l, err := netlink.LinkByName(brphys)
@@ -1274,7 +1274,7 @@ OFPT_GET_CONFIG_REPLY (xid=0x4): frags=normal miss_send_len=0`
 			localGw.nodeIPManager.Sync()
 			// we cannot start openflow manager directly because it spawns a go routine
 			// FIXME: extract openflow manager func from the spawning of a go routine so it can be called directly below.
-			localGw.openflowManager.syncFlows()
+			localGw.bridgeManager.syncFlows()
 
 			// Verify the code moved eth0's IP address, MAC, and routes
 			// over to breth0

@@ -17,7 +17,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/informer"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/addressmanager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/bridgeconfig"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/egressipgw"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
@@ -34,7 +33,6 @@ type Gateway interface {
 	informer.ServiceAndEndpointsEventHandler
 	Init(<-chan struct{}, *sync.WaitGroup) error
 	Start() error
-	GetGatewayBridgeIface() string
 	GetGatewayIface() string
 	SetDefaultGatewayBridgeMAC(addr net.HardwareAddr)
 	SetDefaultPodNetworkAdvertised(bool)
@@ -50,8 +48,8 @@ type gateway struct {
 	nodePortWatcherIptables informer.ServiceEventHandler
 	// nodePortWatcher is used in Local+Shared GW modes to handle nodePort flows in shared OVS bridge
 	nodePortWatcher      informer.ServiceAndEndpointsEventHandler
-	openflowManager      *openflowManager
-	nodeIPManager        *addressmanager.AddressManager
+	bridgeManager        *BridgeManager
+	nodeIPManager        *AddressManager
 	bridgeEIPAddrManager *egressipgw.BridgeEIPAddrManager
 	initFunc             func() error
 	readyFunc            func() (bool, error)
@@ -322,13 +320,13 @@ func (g *gateway) Init(stopChan <-chan struct{}, wg *sync.WaitGroup) error {
 }
 
 func (g *gateway) Start() error {
-	if g.openflowManager != nil {
+	if g.bridgeManager != nil {
 		klog.Info("Spawning Conntrack Rule Check Thread")
-		err := g.openflowManager.updateBridgeFlowCache(g.nodeIPManager.ListAddresses())
+		err := g.nodeIPManager.UpdateBridgeFlowCache()
 		if err != nil {
 			return fmt.Errorf("failed to update bridge flow cache: %w", err)
 		}
-		g.openflowManager.Run(g.stopChan, g.wg)
+		g.bridgeManager.Run(g.stopChan, g.wg)
 	}
 
 	if g.nodeIPManager != nil {
@@ -450,37 +448,29 @@ func gatewayInitInternal(nodeName, gwIntf, egressGatewayIntf string, gwNextHops 
 	return gatewayBridge, egressGWBridge, err
 }
 
-func (g *gateway) GetGatewayBridgeIface() string {
-	return g.openflowManager.getDefaultBridgeName()
-}
-
 func (g *gateway) GetGatewayIface() string {
-	return g.openflowManager.defaultBridge.GetGatewayIface()
+	return g.bridgeManager.DefaultBridge.GetGatewayIface()
 }
 
 // SetDefaultGatewayBridgeMAC updates the mac address for the OFM used to render flows with
 func (g *gateway) SetDefaultGatewayBridgeMAC(macAddr net.HardwareAddr) {
-	g.openflowManager.setDefaultBridgeMAC(macAddr)
+	g.bridgeManager.setDefaultBridgeMAC(macAddr)
 	klog.Infof("Default gateway bridge MAC address updated to %s", macAddr)
 }
 
 func (g *gateway) SetDefaultPodNetworkAdvertised(isPodNetworkAdvertised bool) {
-	g.openflowManager.defaultBridge.GetNetworkConfig(types.DefaultNetworkName).Advertised.Store(isPodNetworkAdvertised)
-}
-
-func (g *gateway) GetDefaultPodNetworkAdvertised() bool {
-	return g.openflowManager.defaultBridge.GetNetworkConfig(types.DefaultNetworkName).Advertised.Load()
+	g.bridgeManager.DefaultBridge.GetNetworkConfig(types.DefaultNetworkName).Advertised.Store(isPodNetworkAdvertised)
 }
 
 // Reconcile handles triggering updates to different components of a gateway, like OFM, Services
 func (g *gateway) Reconcile() error {
 	klog.Info("Reconciling gateway with updates")
-	if err := g.openflowManager.updateBridgeFlowCache(g.nodeIPManager.ListAddresses()); err != nil {
+	if err := g.nodeIPManager.UpdateBridgeFlowCache(); err != nil {
 		return err
 	}
 	// let's sync these flows immediately
-	g.openflowManager.requestFlowSync()
-	err := g.updateSNATRules()
+	g.bridgeManager.requestFlowSync()
+	err := g.nodeIPManager.UpdateSNATRules()
 	if err != nil {
 		return err
 	}
@@ -512,14 +502,4 @@ func (g *gateway) addAllServices() []error {
 	}
 	g.servicesRetryFramework.RequestRetryObjs()
 	return errs
-}
-
-func (g *gateway) updateSNATRules() error {
-	subnets := util.IPsToNetworkIPs(g.nodeIPManager.MgmtPort.GetAddresses()...)
-
-	if g.GetDefaultPodNetworkAdvertised() || config.Gateway.Mode != config.GatewayModeLocal {
-		return delLocalGatewayPodSubnetNATRules(subnets...)
-	}
-
-	return addLocalGatewayPodSubnetNATRules(subnets...)
 }
