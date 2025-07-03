@@ -27,7 +27,7 @@ import (
 )
 
 type AddressManager struct {
-	NodeName      string
+	nodeName      string
 	watchFactory  factory.NodeWatchFactory
 	Cidrs         sets.Set[string]
 	nodeAnnotator kube.Annotator
@@ -60,7 +60,7 @@ func NewTestAddressManager(nodeName string, k kube.Interface, watchFactory facto
 // reproducibility of unit tests.
 func newAddressManagerInternal(nodeName string, k kube.Interface, mgmtPort managementport.Interface, watchFactory factory.NodeWatchFactory, gwBridge *bridgeconfig.BridgeConfiguration, useNetlink bool) *AddressManager {
 	mgr := &AddressManager{
-		NodeName:      nodeName,
+		nodeName:      nodeName,
 		watchFactory:  watchFactory,
 		Cidrs:         sets.New[string](),
 		MgmtPort:      mgmtPort,
@@ -278,7 +278,7 @@ func (c *AddressManager) updateNodeAddressAnnotations() error {
 	var ifAddrs []*net.IPNet
 
 	// Get node information
-	node, err := c.watchFactory.GetNode(c.NodeName)
+	node, err := c.watchFactory.GetNode(c.nodeName)
 	if err != nil {
 		return err
 	}
@@ -350,7 +350,7 @@ func (c *AddressManager) doNodeHostCIDRsMatch() bool {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	node, err := c.watchFactory.GetNode(c.NodeName)
+	node, err := c.watchFactory.GetNode(c.nodeName)
 	if err != nil {
 		klog.Errorf("Unable to get node from informer")
 		return false
@@ -369,7 +369,7 @@ func (c *AddressManager) doNodeHostCIDRsMatch() bool {
 // nodePrimaryAddrChanged returns false if there is an error or if the IP does
 // match, otherwise it returns true and updates the current primary IP address.
 func (c *AddressManager) nodePrimaryAddrChanged() (bool, error) {
-	node, err := c.watchFactory.GetNode(c.NodeName)
+	node, err := c.watchFactory.GetNode(c.nodeName)
 	if err != nil {
 		return false, err
 	}
@@ -521,7 +521,7 @@ func (c *AddressManager) Sync() {
 // addresses are used to support Egress IP multi NIC feature. The addresses must not be included in address manager
 // because the addresses are only to support Egress IP multi NIC feature and must not be exposed via host-cidrs annot.
 func (c *AddressManager) getSecondaryHostEgressIPs() (sets.Set[string], error) {
-	node, err := c.watchFactory.GetNode(c.NodeName)
+	node, err := c.watchFactory.GetNode(c.nodeName)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get Node from informer: %v", err)
 	}
@@ -536,7 +536,7 @@ func (c *AddressManager) getSecondaryHostEgressIPs() (sets.Set[string], error) {
 }
 
 func (c *AddressManager) getPrimaryHostEgressIPs() (sets.Set[string], error) {
-	node, err := c.watchFactory.GetNode(c.NodeName)
+	node, err := c.watchFactory.GetNode(c.nodeName)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get Node from informer: %v", err)
 	}
@@ -596,12 +596,12 @@ func (c *AddressManager) updateOVNEncapIPAndReconnect(newIP net.IP) {
 	// Update node-encap-ips annotation
 	encapIPList := sets.New[string](config.Default.EffectiveEncapIP)
 	if err := util.SetNodeEncapIPs(c.nodeAnnotator, encapIPList); err != nil {
-		klog.Errorf("Failed to set node-encap-ips annotation for node %s: %v", c.NodeName, err)
+		klog.Errorf("Failed to set node-encap-ips annotation for node %s: %v", c.nodeName, err)
 		return
 	}
 
 	if err := c.nodeAnnotator.Run(); err != nil {
-		klog.Errorf("Failed to set node %s annotations: %v", c.NodeName, err)
+		klog.Errorf("Failed to set node %s annotations: %v", c.nodeName, err)
 		return
 	}
 }

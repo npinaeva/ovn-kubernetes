@@ -63,6 +63,7 @@ func initFakeNodePortWatcher(iptV4, iptV6 util.IPTablesHelper) *nodePortWatcher 
 	defaultBridge.SetMAC(gwMACParsed)
 
 	fNPW := nodePortWatcher{
+		nodeName:    fakeNodeName,
 		ofportPhys:  "eth0",
 		gatewayIPv4: v4localnetGatewayIP,
 		gatewayIPv6: v6localnetGatewayIP,

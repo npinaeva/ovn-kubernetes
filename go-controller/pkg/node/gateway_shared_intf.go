@@ -185,6 +185,7 @@ func newNodePortWatcherIptables(networkManager networkmanager.Interface) *nodePo
 // nodePortWatcher manages OpenFlow and iptables rules
 // to ensure that services using NodePorts are accessible
 type nodePortWatcher struct {
+	nodeName      string
 	dpuMode       bool
 	gatewayIPv4   string
 	gatewayIPv6   string
@@ -1212,7 +1213,7 @@ func (npw *nodePortWatcher) DeleteEndpointSlice(epSlice *discovery.EndpointSlice
 
 // GetLocalEndpointAddresses returns a list of eligible endpoints that are local to the node
 func (npw *nodePortWatcher) GetLocalEligibleEndpointAddresses(endpointSlices []*discovery.EndpointSlice, service *corev1.Service) sets.Set[string] {
-	return util.GetLocalEligibleEndpointAddressesFromSlices(endpointSlices, service, npw.nodeIPManager.NodeName)
+	return util.GetLocalEligibleEndpointAddressesFromSlices(endpointSlices, service, npw.nodeName)
 }
 
 func (npw *nodePortWatcher) UpdateEndpointSlice(oldEpSlice, newEpSlice *discovery.EndpointSlice) error {
@@ -1531,7 +1532,8 @@ func newGateway(
 
 		if config.Gateway.NodeportEnable {
 			klog.Info("Creating Gateway Node Port Watcher")
-			gw.nodePortWatcher, err = newNodePortWatcher(gwBridge, gw.openflowManager, gw.nodeIPManager, watchFactory, networkManager)
+			gw.nodePortWatcher, err = newNodePortWatcher(nodeName, gwBridge, gw.openflowManager, gw.nodeIPManager,
+				watchFactory, networkManager)
 			if err != nil {
 				return err
 			}
@@ -1552,6 +1554,7 @@ func newGateway(
 }
 
 func newNodePortWatcher(
+	nodeName string,
 	gwBridge *bridgeconfig.BridgeConfiguration,
 	ofm *openflowManager,
 	nodeIPManager *addressmanager.AddressManager,
@@ -1620,6 +1623,7 @@ func newNodePortWatcher(
 	gatewayIPv4, gatewayIPv6 := getGatewayFamilyAddrs(gwBridge.GetIPs())
 
 	npw := &nodePortWatcher{
+		nodeName:       nodeName,
 		dpuMode:        dpuMode,
 		gatewayIPv4:    gatewayIPv4,
 		gatewayIPv6:    gatewayIPv6,
