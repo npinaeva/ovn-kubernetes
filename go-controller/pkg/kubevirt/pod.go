@@ -526,7 +526,13 @@ func (r *DefaultGatewayReconciler) ReconcileIPv4AfterLiveMigration(liveMigration
 	if err != nil {
 		return err
 	}
-
+	if r.netInfo.TopologyType() == ovntypes.Layer2Topology {
+		transitRouterInfo, err := util.GetTransitRouterInfo(targetNode)
+		if err != nil {
+			return err
+		}
+		lrpJoinAddress = transitRouterInfo.GatewayRouterNets[0].IP
+	}
 	lrpMAC := util.IPAddrToHWAddr(lrpJoinAddress)
 	for _, subnet := range r.netInfo.Subnets() {
 		gwIP := util.GetNodeGatewayIfAddr(subnet.CIDR).IP.To4()
@@ -582,6 +588,14 @@ func (r *DefaultGatewayReconciler) ReconcileIPv6AfterLiveMigration(liveMigration
 		if err != nil {
 			return ovntypes.NewSuppressedError(fmt.Errorf("failed parsing join addresss from node %q and network %q to reconcile ipv6 gateway: %w", node.Name, r.netInfo.GetNetworkName(), err))
 		}
+		if r.netInfo.TopologyType() == ovntypes.Layer2Topology {
+			transitRouterInfo, err := util.GetTransitRouterInfo(node)
+			if err != nil {
+				return ovntypes.NewSuppressedError(fmt.Errorf("failed parsing join addresss from node %q and network %q to reconcile ipv6 gateway: %w", node.Name, r.netInfo.GetNetworkName(), err))
+			}
+			nodeJoinAddrs = transitRouterInfo.GatewayRouterNets
+		}
+
 		// During upgrades, nftables blocks Router Advertisements (RAs) from other nodes.
 		// However, Virtual Machines (VMs) may still retain old default gateway paths.
 		// To address this, we create a new Router Advertisement with a lifetime of 0
@@ -597,6 +611,13 @@ func (r *DefaultGatewayReconciler) ReconcileIPv6AfterLiveMigration(liveMigration
 	targetNodeJoinAddrs, err := udn.GetGWRouterIPs(targetNode, r.netInfo)
 	if err != nil {
 		return ovntypes.NewSuppressedError(fmt.Errorf("failed parsing join addresss from live migration target node %q and network %q to reconcile ipv6 gateway: %w", targetNode.Name, r.netInfo.GetNetworkName(), err))
+	}
+	if r.netInfo.TopologyType() == ovntypes.Layer2Topology {
+		transitRouterInfo, err := util.GetTransitRouterInfo(targetNode)
+		if err != nil {
+			return ovntypes.NewSuppressedError(fmt.Errorf("failed parsing join addresss from  live migration target node %q and network %q to reconcile ipv6 gateway: %w", targetNode.Name, r.netInfo.GetNetworkName(), err))
+		}
+		targetNodeJoinAddrs = transitRouterInfo.GatewayRouterNets
 	}
 	ras = append(ras, newRouterAdvertisementFromJoinIPAndLifetime(targetNodeJoinAddrs[0].IP, destinationMAC, destinationIP.IP, 65535))
 	return ndp.SendRouterAdvertisements(r.interfaceName, ras...)

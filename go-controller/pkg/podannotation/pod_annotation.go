@@ -18,7 +18,6 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/generator/udn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -598,14 +597,11 @@ func AddRoutesGatewayIP(
 			// Until https://github.com/ovn-kubernetes/ovn-kubernetes/issues/4876 is fixed, it is limited to IC only
 			if config.OVNKubernetesFeature.EnableInterconnect {
 				if _, isIPv6Mode := netinfo.IPMode(); isIPv6Mode {
-					joinAddrs, err := udn.GetGWRouterIPs(node, netinfo.GetNetInfo())
+					transitRouterInfo, err := util.GetTransitRouterInfo(node)
 					if err != nil {
-						if util.IsAnnotationNotSetError(err) {
-							return types.NewSuppressedError(err)
-						}
 						return fmt.Errorf("failed parsing node gateway router join addresses, network %q, %w", netinfo.GetNetworkName(), err)
 					}
-					podAnnotation.GatewayIPv6LLA = util.HWAddrToIPv6LLA(util.IPAddrToHWAddr(joinAddrs[0].IP))
+					podAnnotation.GatewayIPv6LLA = util.HWAddrToIPv6LLA(util.IPAddrToHWAddr(transitRouterInfo.GatewayRouterNets[0].IP))
 				}
 			}
 			return nil

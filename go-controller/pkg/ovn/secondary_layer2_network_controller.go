@@ -723,16 +723,16 @@ func (oc *SecondaryLayer2NetworkController) addUpdateRemoteNodeEvent(node *corev
 }
 
 func (oc *SecondaryLayer2NetworkController) ensureRemoteNodeGR(node *corev1.Node) error {
-	transitRouterInfo, err := getTransitRouterInfo(node)
+	transitRouterInfo, err := util.GetTransitRouterInfo(node)
 	if err != nil {
 		return nil
 	}
 	transitPort := nbdb.LogicalRouterPort{
 		Name:     types.TransitRouterToRouterPrefix + oc.GetNetworkScopedGWRouterName(node.Name),
-		MAC:      util.IPAddrToHWAddr(transitRouterInfo.transitRouterNets[0].IP).String(),
-		Networks: util.IPNetsToStringSlice(transitRouterInfo.transitRouterNets),
+		MAC:      util.IPAddrToHWAddr(transitRouterInfo.TransitRouterNets[0].IP).String(),
+		Networks: util.IPNetsToStringSlice(transitRouterInfo.TransitRouterNets),
 		Options: map[string]string{
-			libovsdbops.RequestedTnlKey:  strconv.Itoa(transitRouterInfo.nodeID),
+			libovsdbops.RequestedTnlKey:  strconv.Itoa(transitRouterInfo.NodeID),
 			libovsdbops.RequestedChassis: node.Name,
 		},
 		ExternalIDs: map[string]string{
@@ -752,7 +752,7 @@ func (oc *SecondaryLayer2NetworkController) ensureRemoteNodeGR(node *corev1.Node
 		return err
 	}
 	for _, gwRouterJoinIP := range gwRouterJoinIPs {
-		nexthop, err := util.MatchFirstIPNetFamily(utilnet.IsIPv6CIDR(gwRouterJoinIP), transitRouterInfo.gatewayRouterNets)
+		nexthop, err := util.MatchFirstIPNetFamily(utilnet.IsIPv6CIDR(gwRouterJoinIP), transitRouterInfo.GatewayRouterNets)
 		if err != nil {
 			return fmt.Errorf("failed to add remote node join ip based "+
 				"routes in distributed router %s: %v",

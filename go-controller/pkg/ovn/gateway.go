@@ -57,7 +57,7 @@ type GatewayManager struct {
 	// Includes all node gateway routers.
 	routerLoadBalancerGroupUUID string
 
-	transitRouterInfo *transitRouterInfo
+	transitRouterInfo *util.TransitRouterInfo
 }
 
 type GatewayOption func(*GatewayManager)
@@ -379,10 +379,10 @@ func (gw *GatewayManager) createGWRouterPeerRouterPort() error {
 
 	ovnClusterRouterToGWRouterPort := nbdb.LogicalRouterPort{
 		Name:     gwPeerPortName,
-		MAC:      util.IPAddrToHWAddr(gw.transitRouterInfo.transitRouterNets[0].IP).String(),
-		Networks: util.IPNetsToStringSlice(gw.transitRouterInfo.transitRouterNets),
+		MAC:      util.IPAddrToHWAddr(gw.transitRouterInfo.TransitRouterNets[0].IP).String(),
+		Networks: util.IPNetsToStringSlice(gw.transitRouterInfo.TransitRouterNets),
 		Options: map[string]string{
-			libovsdbops.RequestedTnlKey: fmt.Sprintf("%d", gw.transitRouterInfo.nodeID),
+			libovsdbops.RequestedTnlKey: fmt.Sprintf("%d", gw.transitRouterInfo.NodeID),
 		},
 		Peer: ptr.To(gwRouterPortName),
 		ExternalIDs: map[string]string{
@@ -418,7 +418,7 @@ func (gw *GatewayManager) createGWRouterPort(gwConfig *GatewayConfig,
 		gwLRPNetworks = append(gwLRPNetworks, gwRouterJoinNet.String())
 	}
 	if gw.netInfo.TopologyType() == types.Layer2Topology {
-		for _, gatewayRouterTransitNetwork := range gw.transitRouterInfo.gatewayRouterNets {
+		for _, gatewayRouterTransitNetwork := range gw.transitRouterInfo.GatewayRouterNets {
 			gwLRPNetworks = append(gwLRPNetworks, gatewayRouterTransitNetwork.String())
 		}
 	}
@@ -565,7 +565,7 @@ func (gw *GatewayManager) updateGWRouterStaticRoutes(gwConfig *GatewayConfig, ex
 
 	if gw.netInfo.TopologyType() == types.Layer2Topology {
 		for _, subnet := range gwConfig.hostSubnets {
-			nexthop, err := util.MatchFirstIPNetFamily(utilnet.IsIPv6(subnet.IP), gw.transitRouterInfo.transitRouterNets)
+			nexthop, err := util.MatchFirstIPNetFamily(utilnet.IsIPv6(subnet.IP), gw.transitRouterInfo.TransitRouterNets)
 			if err != nil {
 				return err
 			}
@@ -601,7 +601,7 @@ func (gw *GatewayManager) updateClusterRouterStaticRoutes(gwConfig *GatewayConfi
 	// FIXME(trozet): if LRP IP is changed, we do not remove stale instances of these routes
 	nextHops := gwRouterJoinIPs
 	if gw.netInfo.TopologyType() == types.Layer2Topology {
-		nextHops = util.IPNetsToIPs(gw.transitRouterInfo.gatewayRouterNets)
+		nextHops = util.IPNetsToIPs(gw.transitRouterInfo.GatewayRouterNets)
 	}
 
 	for _, gwRouterJoinIP := range gwRouterJoinIPs {
@@ -1452,7 +1452,7 @@ func (gw *GatewayManager) setTransitRouterInfo(nodeName string) error {
 	if err != nil {
 		return err
 	}
-	gw.transitRouterInfo, err = getTransitRouterInfo(node)
+	gw.transitRouterInfo, err = util.GetTransitRouterInfo(node)
 	if err != nil {
 		return err
 	}
