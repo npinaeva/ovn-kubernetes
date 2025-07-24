@@ -459,7 +459,7 @@ var _ = Describe("SecondaryNodeNetworkController: UserDefinedPrimaryNetwork Gate
 					udnRules = append(udnRules, rule)
 				}
 			}
-			Expect(udnRules).To(HaveLen(3))
+			Expect(udnRules).To(HaveLen(4))
 
 			By("delete the network and ensure its associated VRF device is also deleted")
 			cnode := node.DeepCopy()
