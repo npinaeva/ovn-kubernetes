@@ -320,6 +320,8 @@ type SecondaryLayer3NetworkController struct {
 
 	// EgressIP controller utilized only to initialize a network with OVN polices to support EgressIP functionality.
 	eIPController *EgressIPController
+
+	nftSNATNodes sets.Set[string]
 }
 
 // NewSecondaryLayer3NetworkController create a new OVN controller for the given secondary layer3 NAD
@@ -367,6 +369,7 @@ func NewSecondaryLayer3NetworkController(
 		gatewayTopologyFactory:      topology.NewGatewayTopologyFactory(cnci.nbClient),
 		gatewayManagers:             sync.Map{},
 		eIPController:               eIPController,
+		nftSNATNodes:                sets.New[string](),
 	}
 
 	if config.OVNKubernetesFeature.EnableInterconnect {
@@ -906,8 +909,19 @@ func (oc *SecondaryLayer3NetworkController) addNode(node *corev1.Node) ([]*net.I
 	}
 	if util.IsNetworkSegmentationSupportEnabled() && oc.IsPrimaryNetwork() {
 		isUDNAdvertised := util.IsPodNetworkAdvertisedAtNode(oc, node.Name)
-		if err := oc.addOrUpdateUDNNodeSubnetEgressSNAT(hostSubnets, node, isUDNAdvertised); err != nil {
-			return nil, err
+		if !oc.nftSNATNodes.Has(node.Name) {
+			hasPodsOnNetwork, err := oc.hasPodsOnNetwork(node.Name)
+			if err != nil {
+				return nil, fmt.Errorf("failed to check for conditional snats: %w", err)
+			}
+			if hasPodsOnNetwork {
+				if err := oc.addOrUpdateUDNNodeSubnetEgressSNAT(hostSubnets, node, isUDNAdvertised); err != nil {
+					return nil, err
+				}
+			} else {
+				oc.nftSNATNodes.Insert(node.Name)
+				// TODO else should delete the SNAT
+			}
 		}
 		if !isUDNAdvertised {
 			if util.IsRouteAdvertisementsEnabled() {
