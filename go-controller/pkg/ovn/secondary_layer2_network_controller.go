@@ -299,6 +299,8 @@ type SecondaryLayer2NetworkController struct {
 	// reconcile the virtual machine default gateway sending GARPs and RAs
 	defaultGatewayReconciler *kubevirt.DefaultGatewayReconciler
 
+	// nftSNATNodes is used to track which node have switched to the nft-based SNAT.
+	// Once a node gets into this set, there is no way back.
 	nftSNATNodes sets.Set[string]
 }
 
@@ -571,6 +573,15 @@ func (oc *SecondaryLayer2NetworkController) newRetryFramework(
 	)
 }
 
+func (oc *SecondaryLayer2NetworkController) syncNodes(nodes []interface{}) error {
+	var err error
+	if err = oc.BaseSecondaryLayer2NetworkController.syncNodes(nodes); err != nil {
+		return err
+	}
+	oc.nftSNATNodes, err = oc.findNodesWithoutEgressSNAT(nodes)
+	return err
+}
+
 func (oc *SecondaryLayer2NetworkController) addUpdateLocalNodeEvent(node *corev1.Node, nSyncs *nodeSyncs) error {
 	var errs []error
 
@@ -592,6 +603,8 @@ func (oc *SecondaryLayer2NetworkController) addUpdateLocalNodeEvent(node *corev1
 				}
 				isUDNAdvertised := util.IsPodNetworkAdvertisedAtNode(oc, node.Name)
 				if !oc.nftSNATNodes.Has(node.Name) {
+					// this node had egress SNAT configured on startup, wait until it has no more pods
+					// to switch to nftables egress SNAT
 					hasPodsOnNetwork, err := oc.hasPodsOnNetwork(node.Name)
 					if err != nil {
 						return fmt.Errorf("failed to check for conditional snats: %w", err)
@@ -602,8 +615,10 @@ func (oc *SecondaryLayer2NetworkController) addUpdateLocalNodeEvent(node *corev1
 							return err
 						}
 					} else {
+						if err = oc.deleteUDNEgressSNAT(node.Name); err != nil {
+							return err
+						}
 						oc.nftSNATNodes.Insert(node.Name)
-						// TODO else should delete the SNAT
 					}
 				}
 				if !isUDNAdvertised {
