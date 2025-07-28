@@ -227,9 +227,7 @@ func (udng *UserDefinedNetworkGateway) addMasqChain() error {
 	if len(podSubnets) == 0 {
 		return fmt.Errorf("cannot determine pod subnets while configuring masquerade nftables chain for network: %s", udng.GetNetworkName())
 	}
-	// TODO agree on the right offset = the number of supported networks
-	// HACK: offset regular mark by 10k to avoid collision with current mark rules, this should be fixed later
-	mark := udng.pktMark + 10000
+	mark := udng.pktMark
 	for _, podSubnet := range podSubnets {
 		ipPrefix := "ip"
 		nfproto := "ipv4"
@@ -842,7 +840,6 @@ func (udng *UserDefinedNetworkGateway) constructUDNVRFIPRules(isNetworkAdvertise
 	if masqIPv4 != nil {
 		addIPRules = append(addIPRules, generateIPRuleForPacketMark(udng.pktMark, false, uint(udng.vrfTableId)))
 		masqIPRules = append(masqIPRules, generateIPRuleForMasqIP(masqIPv4.IP, false, uint(udng.vrfTableId)))
-		addIPRules = append(addIPRules, generateIPRuleForPacketMark(udng.pktMark+10000, false, uint(udng.vrfTableId)))
 		for _, subnet := range udng.Subnets() {
 			if utilnet.IsIPv4CIDR(subnet.CIDR) {
 				subnetIPRules = append(subnetIPRules, generateIPRuleForUDNSubnet(subnet.CIDR, false, uint(udng.vrfTableId)))
@@ -852,7 +849,6 @@ func (udng *UserDefinedNetworkGateway) constructUDNVRFIPRules(isNetworkAdvertise
 	if masqIPv6 != nil {
 		addIPRules = append(addIPRules, generateIPRuleForPacketMark(udng.pktMark, true, uint(udng.vrfTableId)))
 		masqIPRules = append(masqIPRules, generateIPRuleForMasqIP(masqIPv6.IP, true, uint(udng.vrfTableId)))
-		addIPRules = append(addIPRules, generateIPRuleForPacketMark(udng.pktMark+10000, true, uint(udng.vrfTableId)))
 		for _, subnet := range udng.Subnets() {
 			if utilnet.IsIPv6CIDR(subnet.CIDR) {
 				subnetIPRules = append(subnetIPRules, generateIPRuleForUDNSubnet(subnet.CIDR, true, uint(udng.vrfTableId)))
