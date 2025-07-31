@@ -183,6 +183,7 @@ func newDefaultNetworkControllerCommon(
 		networkManager,
 		cnci.recorder,
 		&util.DefaultNetInfo{},
+		false,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create new service controller while creating new default network controller: %w", err)
