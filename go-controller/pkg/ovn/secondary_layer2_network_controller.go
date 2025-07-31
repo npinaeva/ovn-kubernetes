@@ -2,6 +2,7 @@ package ovn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
@@ -12,6 +13,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
+
+	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/allocator/pod"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
@@ -296,6 +299,9 @@ type SecondaryLayer2NetworkController struct {
 
 	// reconcile the virtual machine default gateway sending GARPs and RAs
 	defaultGatewayReconciler *kubevirt.DefaultGatewayReconciler
+
+	usesTransitRouter bool
+	topologyUpgrade   bool
 }
 
 // NewSecondaryLayer2NetworkController create a new OVN controller for the given secondary layer2 nad
@@ -350,6 +356,12 @@ func NewSecondaryLayer2NetworkController(
 
 	if config.OVNKubernetesFeature.EnableInterconnect {
 		oc.zoneICHandler = zoneinterconnect.NewZoneInterconnectHandler(oc.GetNetInfo(), oc.nbClient, oc.sbClient, oc.watchFactory)
+	}
+
+	// Figure out which topology we are using.
+	// oc.usesTransitRouter is used to call svccontroller.NewController.
+	if err := oc.setTopologyType(); err != nil {
+		return nil, fmt.Errorf("failed to set topology type for Layer2 network %s: %w", oc.GetNetworkName(), err)
 	}
 
 	if util.IsNetworkSegmentationSupportEnabled() && netInfo.IsPrimaryNetwork() {
@@ -914,4 +926,71 @@ func (oc *SecondaryLayer2NetworkController) reconcileLiveMigrationTargetZone(kub
 		}
 	}
 	return nil
+}
+
+func (oc *SecondaryLayer2NetworkController) setTopologyType() error {
+	transitRouterName := oc.GetNetworkScopedClusterRouterName()
+	transitRouter := &nbdb.LogicalRouter{
+		Name: transitRouterName,
+	}
+	_, err := libovsdbops.GetLogicalRouter(oc.nbClient, transitRouter)
+	if err == nil {
+		oc.usesTransitRouter = true
+		return nil
+	}
+	if !errors.Is(err, libovsdbclient.ErrNotFound) {
+		return fmt.Errorf("failed get logical router %s: %w", transitRouterName, err)
+	}
+	// Transit router is not used yet, check if we can switch to the new topology now
+	hasRunningPods, err := oc.hasPodsOnNetwork()
+	if err != nil {
+		return fmt.Errorf("failed to check if there are running pods on network %s: %w", oc.GetNetworkName(), err)
+	}
+	if !hasRunningPods {
+		// start using the new topology now
+		oc.usesTransitRouter = true
+		oc.topologyUpgrade = true
+	}
+	return nil
+}
+
+func hasPort(ports []string, port string) bool {
+	for _, p := range ports {
+		if p == port {
+			return true
+		}
+	}
+	return false
+}
+
+func (oc *SecondaryLayer2NetworkController) hasPodsOnNetwork() (bool, error) {
+	switchName := oc.GetNetworkScopedSwitchName("")
+	ls := &nbdb.LogicalSwitch{
+		Name: switchName,
+	}
+	sw, err := libovsdbops.GetLogicalSwitch(oc.nbClient, ls)
+	if err != nil {
+		if errors.Is(err, libovsdbclient.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if len(sw.Ports) == 0 {
+		return false, nil
+	}
+
+	ports, err := libovsdbops.FindLogicalSwitchPortWithPredicate(
+		oc.nbClient,
+		func(lsp *nbdb.LogicalSwitchPort) bool {
+			return lsp.Type == "" &&
+				lsp.ExternalIDs["pod"] == "true" &&
+				hasPort(sw.Ports, lsp.UUID)
+		})
+	if err != nil {
+		return false, err
+	}
+	if len(ports) > 0 {
+		return true, nil
+	}
+	return false, nil
 }
