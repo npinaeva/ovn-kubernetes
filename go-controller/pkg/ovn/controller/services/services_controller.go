@@ -66,6 +66,7 @@ func NewController(client clientset.Interface,
 	networkManager networkmanager.Interface,
 	recorder record.EventRecorder,
 	netInfo util.NetInfo,
+	layer2TransitRouter bool,
 ) (*Controller, error) {
 	klog.V(4).Infof("Creating services controller for network=%s", netInfo.GetNetworkName())
 	c := &Controller{
@@ -85,11 +86,12 @@ func NewController(client clientset.Interface,
 		endpointSliceLister:   endpointSliceInformer.Lister(),
 		networkManager:        networkManager,
 
-		eventRecorder: recorder,
-		repair:        newRepair(serviceInformer.Lister(), nbClient),
-		nodeInformer:  nodeInformer,
-		nodesSynced:   nodeInformer.Informer().HasSynced,
-		netInfo:       netInfo,
+		eventRecorder:       recorder,
+		repair:              newRepair(serviceInformer.Lister(), nbClient),
+		nodeInformer:        nodeInformer,
+		nodesSynced:         nodeInformer.Informer().HasSynced,
+		netInfo:             netInfo,
+		layer2TransitRouter: layer2TransitRouter,
 	}
 	zone, err := libovsdbutil.GetNBZone(c.nbClient)
 	if err != nil {
@@ -167,7 +169,8 @@ type Controller struct {
 	// 'true' if Chassis_Template_Var is supported.
 	useTemplates bool
 
-	netInfo util.NetInfo
+	netInfo             util.NetInfo
+	layer2TransitRouter bool
 
 	// handlers stored for shutdown
 	nodeHandler     cache.ResourceEventHandlerRegistration
@@ -780,7 +783,7 @@ func (c *Controller) cleanupUDNEnabledServiceRoute(key string) error {
 
 	var ops []ovsdb.Operation
 	var err error
-	if c.netInfo.TopologyType() == types.Layer2Topology {
+	if c.netInfo.TopologyType() == types.Layer2Topology && !c.layer2TransitRouter {
 		for _, node := range c.nodeInfos {
 			if ops, err = libovsdbops.DeleteLogicalRouterStaticRoutesWithPredicateOps(c.nbClient, ops, c.netInfo.GetNetworkScopedGWRouterName(node.name), delPredicate); err != nil {
 				return err
@@ -829,9 +832,11 @@ func (c *Controller) configureUDNEnabledServiceRoute(service *corev1.Service) er
 			ExternalIDs: extIDs,
 		}
 		routerName := c.netInfo.GetNetworkScopedClusterRouterName()
-		if c.netInfo.TopologyType() == types.Layer2Topology {
+		if c.netInfo.TopologyType() == types.Layer2Topology && !c.layer2TransitRouter {
 			routerName = nodeInfo.gatewayRouterName
 		}
+		// TODO check whether this needs cleanup, it could just be pointing to the same route from 2 routers
+		// It will never be matched on the old GR, because all matched traffic will be sent to the mgmtPort from the transit router
 		ops, err = libovsdbops.CreateOrUpdateLogicalRouterStaticRoutesWithPredicateOps(c.nbClient, nil, routerName, &staticRoute, func(item *nbdb.LogicalRouterStaticRoute) bool {
 			return routesEqual(item, &staticRoute)
 		})

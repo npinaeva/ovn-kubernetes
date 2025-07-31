@@ -389,6 +389,7 @@ func NewSecondaryLayer2NetworkController(
 			networkManager,
 			cnci.recorder,
 			oc.GetNetInfo(),
+			oc.usesTransitRouter,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("unable to create new service controller while creating new layer2 network controller: %w", err)
