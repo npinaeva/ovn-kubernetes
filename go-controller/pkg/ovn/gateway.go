@@ -79,7 +79,6 @@ func NewGatewayManagerForLayer2Topology(
 	return newGWManager(
 		nodeName,
 		routerName,
-		netInfo.GetNetworkScopedGWRouterName(nodeName),
 		netInfo.GetNetworkScopedExtSwitchName(nodeName),
 		netInfo.GetNetworkScopedSwitchName(""),
 		coopUUID,
@@ -103,7 +102,6 @@ func NewGatewayManager(
 	return newGWManager(
 		nodeName,
 		netInfo.GetNetworkScopedClusterRouterName(),
-		netInfo.GetNetworkScopedGWRouterName(nodeName),
 		netInfo.GetNetworkScopedExtSwitchName(nodeName),
 		netInfo.GetNetworkScopedJoinSwitchName(),
 		coopUUID,
@@ -116,7 +114,7 @@ func NewGatewayManager(
 }
 
 func newGWManager(
-	nodeName, clusterRouterName, gwRouterName, extSwitchName, joinSwitchName string,
+	nodeName, clusterRouterName, extSwitchName, joinSwitchName string,
 	coopUUID string,
 	kube kube.InterfaceOVN,
 	nbClient libovsdbclient.Client,
@@ -126,7 +124,7 @@ func newGWManager(
 	gwManager := &GatewayManager{
 		nodeName:          nodeName,
 		clusterRouterName: clusterRouterName,
-		gwRouterName:      gwRouterName,
+		gwRouterName:      netInfo.GetNetworkScopedGWRouterName(nodeName),
 		extSwitchName:     extSwitchName,
 		joinSwitchName:    joinSwitchName,
 		coppUUID:          coopUUID,
@@ -312,6 +310,19 @@ func (gw *GatewayManager) createGWRouter(gwConfig *GatewayConfig) (*nbdb.Logical
 		return nil, fmt.Errorf("failed to create logical router %+v: %v", gwRouter, err)
 	}
 	return &gwRouter, nil
+}
+
+func GetGWRouterPortName(netInfo util.NetInfo, nodeName string, nbClient libovsdbclient.Client) string {
+	gwRouterName := netInfo.GetNetworkScopedGWRouterName(nodeName)
+	if netInfo.TopologyType() == types.Layer2Topology {
+		layer2TransitRouter := Layer2TransitRouterTopology(nbClient, netInfo)
+
+		if layer2TransitRouter {
+			return types.RouterToTransitRouterPrefix + gwRouterName
+		}
+		return types.RouterToSwitchPrefix + netInfo.GetNetworkScopedSwitchName("")
+	}
+	return types.GWRouterToJoinSwitchPrefix + gwRouterName
 }
 
 func (gw *GatewayManager) getGWRouterPeerRouterPortName() string {
@@ -1071,6 +1082,10 @@ func Layer2TransitRouterTopology(nbClient libovsdbclient.Client, netInfo util.Ne
 	}
 	_, err := libovsdbops.GetLogicalRouter(nbClient, transitRouter)
 	return err == nil
+}
+
+func Layer2NoRouterTopology(nbClient libovsdbclient.Client, netInfo util.NetInfo) bool {
+	return netInfo.TopologyType() == types.Layer2Topology && !Layer2TransitRouterTopology(nbClient, netInfo)
 }
 
 // addExternalSwitch creates a switch connected to the external bridge and connects it to
