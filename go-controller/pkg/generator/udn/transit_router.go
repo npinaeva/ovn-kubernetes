@@ -1,4 +1,4 @@
-package ovn
+package udn
 
 import (
 	"fmt"
@@ -11,25 +11,25 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
-type transitRouterInfo struct {
-	gatewayRouterNets, transitRouterNets []*net.IPNet
-	nodeID                               int
+type TransitRouterInfo struct {
+	GatewayRouterNets, TransitRouterNets []*net.IPNet
+	NodeID                               int
 }
 
-// getTransitRouterInfo calculates the gateway and cluster router networks for every node based on the node ID.
+// GetTransitRouterInfo calculates the gateway and cluster router networks for every node based on the node ID.
 // we use transitSwitchSubnet to split it into smaller networks.
 // For transit-subnet: 100.88.0.0/16, and nodeID=2, we will get:
 // TODO use /31, cache results?
 //   - Network: 			100.88.0.4/30
 //   - Transit Router IP:	100.88.0.5/30
 //   - Gateway Router IP:   100.88.0.6/30
-func getTransitRouterInfo(node *corev1.Node) (*transitRouterInfo, error) {
+func GetTransitRouterInfo(node *corev1.Node) (*TransitRouterInfo, error) {
 	nodeID := util.GetNodeID(node)
 	if nodeID == util.InvalidNodeID {
 		return nil, fmt.Errorf("invalid node id calculating transit router networks")
 	}
-	routerInfo := &transitRouterInfo{
-		nodeID: nodeID,
+	routerInfo := &TransitRouterInfo{
+		NodeID: nodeID,
 	}
 	if config.IPv4Mode {
 		ipGenerator, err := udn.NewIPGenerator(config.ClusterManager.V4TransitSwitchSubnet)
@@ -41,8 +41,8 @@ func getTransitRouterInfo(node *corev1.Node) (*transitRouterInfo, error) {
 			return nil, err
 		}
 
-		routerInfo.transitRouterNets = append(routerInfo.transitRouterNets, transitRouterIP)
-		routerInfo.gatewayRouterNets = append(routerInfo.gatewayRouterNets, gatewayRouterIP)
+		routerInfo.TransitRouterNets = append(routerInfo.TransitRouterNets, transitRouterIP)
+		routerInfo.GatewayRouterNets = append(routerInfo.GatewayRouterNets, gatewayRouterIP)
 	}
 
 	if config.IPv6Mode {
@@ -56,8 +56,8 @@ func getTransitRouterInfo(node *corev1.Node) (*transitRouterInfo, error) {
 			return nil, err
 		}
 
-		routerInfo.transitRouterNets = append(routerInfo.transitRouterNets, transitRouterIP)
-		routerInfo.gatewayRouterNets = append(routerInfo.gatewayRouterNets, gatewayRouterIP)
+		routerInfo.TransitRouterNets = append(routerInfo.TransitRouterNets, transitRouterIP)
+		routerInfo.GatewayRouterNets = append(routerInfo.GatewayRouterNets, gatewayRouterIP)
 	}
 	return routerInfo, nil
 }

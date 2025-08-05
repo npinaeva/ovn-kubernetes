@@ -20,6 +20,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/generator/udn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	libovsdbutil "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/util"
@@ -57,7 +58,7 @@ type GatewayManager struct {
 	// Includes all node gateway routers.
 	routerLoadBalancerGroupUUID string
 
-	transitRouterInfo *transitRouterInfo
+	transitRouterInfo *udn.TransitRouterInfo
 }
 
 type GatewayOption func(*GatewayManager)
@@ -267,7 +268,7 @@ func (gw *GatewayManager) createGWRouter(gwConfig *GatewayConfig) (*nbdb.Logical
 	if gw.netInfo.GetNetworkName() == types.DefaultNetworkName {
 		logicalRouterOptions["snat-ct-zone"] = "0"
 	}
-	if gw.netInfo.TopologyType() == types.Layer2Topology {
+	if gw.netInfo.TopologyType() == types.Layer2Topology && gw.transitRouterInfo == nil {
 		// When multiple networks are set of the same logical-router-port
 		// the networks get lexicographically sorted; thus there is no
 		// ordering or telling on which IP will be chosen as the router-ip
@@ -406,10 +407,10 @@ func (gw *GatewayManager) createGWRouterPeerRouterPort() error {
 
 	ovnClusterRouterToGWRouterPort := nbdb.LogicalRouterPort{
 		Name:     gwPeerPortName,
-		MAC:      util.IPAddrToHWAddr(gw.transitRouterInfo.transitRouterNets[0].IP).String(),
-		Networks: util.IPNetsToStringSlice(gw.transitRouterInfo.transitRouterNets),
+		MAC:      util.IPAddrToHWAddr(gw.transitRouterInfo.TransitRouterNets[0].IP).String(),
+		Networks: util.IPNetsToStringSlice(gw.transitRouterInfo.TransitRouterNets),
 		Options: map[string]string{
-			libovsdbops.RequestedTnlKey: fmt.Sprintf("%d", gw.transitRouterInfo.nodeID),
+			libovsdbops.RequestedTnlKey: fmt.Sprintf("%d", gw.transitRouterInfo.NodeID),
 		},
 		Peer: ptr.To(gwRouterPortName),
 		ExternalIDs: map[string]string{
@@ -453,11 +454,11 @@ func (gw *GatewayManager) createGWRouterPort(gwConfig *GatewayConfig,
 			gwLRPNetworks = append(gwLRPNetworks, util.GetNodeGatewayIfAddr(subnet).String())
 		}
 	}
-	if gw.netInfo.TopologyType() == types.Layer2Topology && gw.transitRouterInfo != nil {
-		for _, gatewayRouterTransitNetwork := range gw.transitRouterInfo.gatewayRouterNets {
-			gwLRPNetworks = append(gwLRPNetworks, gatewayRouterTransitNetwork.String())
-		}
-	}
+	//if gw.netInfo.TopologyType() == types.Layer2Topology && gw.transitRouterInfo != nil {
+	//	for _, gatewayRouterTransitNetwork := range gw.transitRouterInfo.GatewayRouterNets {
+	//		gwLRPNetworks = append(gwLRPNetworks, gatewayRouterTransitNetwork.String())
+	//	}
+	//}
 	gwLRPMAC := util.IPAddrToHWAddr(gwConfig.gwRouterJoinNets[0].IP)
 
 	var options map[string]string
@@ -615,7 +616,7 @@ func (gw *GatewayManager) updateGWRouterStaticRoutes(gwConfig *GatewayConfig, ex
 
 	if gw.netInfo.TopologyType() == types.Layer2Topology && gw.transitRouterInfo != nil {
 		for _, subnet := range gwConfig.hostSubnets {
-			nexthop, err := util.MatchFirstIPNetFamily(utilnet.IsIPv6(subnet.IP), gw.transitRouterInfo.transitRouterNets)
+			nexthop, err := util.MatchFirstIPNetFamily(utilnet.IsIPv6(subnet.IP), gw.transitRouterInfo.TransitRouterNets)
 			if err != nil {
 				return err
 			}
@@ -650,9 +651,9 @@ func (gw *GatewayManager) updateClusterRouterStaticRoutes(gwConfig *GatewayConfi
 	// This can be removed once https://bugzilla.redhat.com/show_bug.cgi?id=1891516 is fixed.
 	// FIXME(trozet): if LRP IP is changed, we do not remove stale instances of these routes
 	nextHops := gwRouterIPs
-	if gw.netInfo.TopologyType() == types.Layer2Topology && gw.transitRouterInfo != nil {
-		nextHops = util.IPNetsToIPs(gw.transitRouterInfo.gatewayRouterNets)
-	}
+	//if gw.netInfo.TopologyType() == types.Layer2Topology && gw.transitRouterInfo != nil {
+	//	nextHops = util.IPNetsToIPs(gw.transitRouterInfo.GatewayRouterNets)
+	//}
 
 	for _, gwRouterIP := range gwRouterIPs {
 		nextHop, err := util.MatchIPFamily(utilnet.IsIPv6(gwRouterIP), nextHops)
@@ -925,7 +926,7 @@ func (gw *GatewayManager) gatewayInit(
 
 	if gw.netInfo.TopologyType() == types.Layer2Topology && gw.clusterRouterName != "" {
 		// layer2 network uses transit router, so we need to set the transit router info
-		// in all the other operations we can use both `gw.clusterRouterName == ""` and `gw.transitRouterInfo == nil`
+		// in all the other operations we can use both `gw.clusterRouterName == ""` and `gw.TransitRouterInfo == nil`
 		// as an indicator of the old topology.
 		if err := gw.setTransitRouterInfo(nodeName); err != nil {
 			return fmt.Errorf("failed to initialize layer2 info for gateway on node %s: %v", nodeName, err)
@@ -1583,7 +1584,7 @@ func (gw *GatewayManager) setTransitRouterInfo(nodeName string) error {
 	if err != nil {
 		return err
 	}
-	gw.transitRouterInfo, err = getTransitRouterInfo(node)
+	gw.transitRouterInfo, err = udn.GetTransitRouterInfo(node)
 	if err != nil {
 		return err
 	}

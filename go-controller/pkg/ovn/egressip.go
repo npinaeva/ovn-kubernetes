@@ -2747,11 +2747,11 @@ func ipFamilyName(isIPv6 bool) string {
 
 func (e *EgressIPController) getTransitIP(node *corev1.Node, wantsIPv6 bool, ni util.NetInfo) (net.IP, error) {
 	if Layer2TransitRouterTopology(e.nbClient, ni) {
-		transitRouterInfo, err := getTransitRouterInfo(node)
+		transitRouterInfo, err := udn.GetTransitRouterInfo(node)
 		if err != nil {
 			return nil, err
 		}
-		nodeTransitIP, err := util.MatchFirstIPNetFamily(wantsIPv6, transitRouterInfo.gatewayRouterNets)
+		nodeTransitIP, err := util.MatchFirstIPNetFamily(wantsIPv6, transitRouterInfo.GatewayRouterNets)
 		if err != nil {
 			return nil, fmt.Errorf("could not find transit router IP of node %v for this family %v: %v", node, wantsIPv6, err)
 		}
