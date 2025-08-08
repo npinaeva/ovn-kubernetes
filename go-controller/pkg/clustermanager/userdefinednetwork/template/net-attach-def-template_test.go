@@ -17,7 +17,7 @@ import (
 var _ = Describe("NetAttachDefTemplate", func() {
 	DescribeTable("should fail to render NAD spec given",
 		func(spec *udnv1.UserDefinedNetworkSpec) {
-			_, err := RenderNADSpec("foo", "bar", spec)
+			_, err := RenderNADSpec("foo", "bar", spec, true)
 			Expect(err).To(HaveOccurred())
 		},
 		Entry("invalid layer2 subnets",
