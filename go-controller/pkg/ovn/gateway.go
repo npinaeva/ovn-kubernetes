@@ -926,8 +926,12 @@ func (gw *GatewayManager) gatewayInit(
 		// layer2 network uses transit router, so we need to set the transit router info
 		// in all the other operations we can use both `gw.clusterRouterName == ""` and `gw.transitRouterInfo == nil`
 		// as an indicator of the old topology.
-		if err := gw.setTransitRouterInfo(nodeName); err != nil {
+		err := gw.setTransitRouterInfo(nodeName)
+		if err != nil {
 			return fmt.Errorf("failed to initialize layer2 info for gateway on node %s: %v", nodeName, err)
+		}
+		if err = gw.oldLayer2TopoCleanup(); err != nil {
+			return fmt.Errorf("failed to cleanup old layer2 topology for gateway on node %s: %v", nodeName, err)
 		}
 	}
 	// If l3gatewayAnnotation.IPAddresses changed, we need to update the perPodSNATs,
@@ -1587,6 +1591,51 @@ func (gw *GatewayManager) setTransitRouterInfo(nodeName string) error {
 	gw.transitRouterInfo, err = getTransitRouterInfo(node)
 	if err != nil {
 		return err
+	}
+	return nil
+}
+
+// oldLayer2TopoCleanup cleans up the old layer2 topology for the gateway on the node.
+// Idempotent, will check if nbdb needs cleanup.
+func (gw *GatewayManager) oldLayer2TopoCleanup() error {
+	// Check if the gateway router port exists.
+	// We delete it as a last operation in this cleanup, hence if it doesn't exist, we can skip the cleanup.
+	gwRouterPort := &nbdb.LogicalRouterPort{
+		Name: types.RouterToSwitchPrefix + gw.joinSwitchName,
+	}
+	var err error
+	gwRouterPort, err = libovsdbops.GetLogicalRouterPort(gw.nbClient, gwRouterPort)
+	if err != nil && errors.Is(err, libovsdbclient.ErrNotFound) {
+		// cleanup not needed, old port does not exist
+		return nil
+	}
+
+	// 1. Delete old port from the switch
+	if err := gw.deleteGWRouterPeerSwitchPort(); err != nil {
+		return fmt.Errorf("failed to delete peer switch port %s: %v", gw.getGWRouterPeerSwitchPortName(), err)
+	}
+	// 2. Cleanup stale nats and routes from the gateway router. Use NetworkExternalID to identify the right resources.
+	routerName := gw.gwRouterName
+	staticRoutePredicate := func(item *nbdb.LogicalRouterStaticRoute) bool {
+		return item.ExternalIDs != nil && item.ExternalIDs[types.NetworkExternalID] == gw.netInfo.GetNetworkName()
+	}
+	if err := libovsdbops.DeleteLogicalRouterStaticRoutesWithPredicate(gw.nbClient, routerName, staticRoutePredicate); err != nil {
+		return fmt.Errorf("failed to delete static routes from the gateway router %s: %v", routerName, err)
+	}
+	natPredicate := func(item *nbdb.NAT) bool {
+		return item.ExternalIDs != nil && item.ExternalIDs[types.NetworkExternalID] == gw.netInfo.GetNetworkName()
+	}
+	ops, err := libovsdbops.DeleteNATsWithPredicateOps(gw.nbClient, nil, natPredicate)
+	if err != nil {
+		return fmt.Errorf("failed to get delete nat ops for the gateway router %s: %v", routerName, err)
+	}
+	if _, err = libovsdbops.TransactAndCheck(gw.nbClient, ops); err != nil {
+		return fmt.Errorf("failed to delete NATs from gateway router %s: %v", routerName, err)
+	}
+
+	// 3. Delete old GR port
+	if err := libovsdbops.DeleteLogicalRouterPorts(gw.nbClient, &nbdb.LogicalRouter{Name: gw.gwRouterName}, gwRouterPort); err != nil {
+		return fmt.Errorf("failed to delete GR port %s: %v", gwRouterPort.Name, err)
 	}
 	return nil
 }
