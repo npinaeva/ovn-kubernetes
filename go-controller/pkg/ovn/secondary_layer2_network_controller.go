@@ -13,6 +13,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	clientgoretry "k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
 
@@ -215,6 +216,9 @@ func (h *secondaryLayer2NetworkControllerEventHandler) UpdateResource(oldObj, ne
 			return h.oc.addUpdateLocalNodeEvent(newNode, nodeSyncsParam)
 		} else {
 			_, syncZoneIC := h.oc.syncZoneICFailed.Load(newNode.Name)
+			if h.oc.remoteNodesNoRouter.Has(oldNode.Name) && util.UDNLayer2NodeUsesTransitRouter(newNode, h.oc.GetNetworkName()) {
+				syncZoneIC = true
+			}
 			return h.oc.addUpdateRemoteNodeEvent(newNode, syncZoneIC)
 		}
 	case factory.PodType:
@@ -315,7 +319,8 @@ type SecondaryLayer2NetworkController struct {
 	defaultGatewayReconciler *kubevirt.DefaultGatewayReconciler
 
 	usesTransitRouter bool
-	topologyUpgrade   bool
+
+	remoteNodesNoRouter sets.Set[string]
 }
 
 // NewSecondaryLayer2NetworkController create a new OVN controller for the given secondary layer2 nad
@@ -367,6 +372,7 @@ func NewSecondaryLayer2NetworkController(
 		gatewayTopologyFactory: topology.NewGatewayTopologyFactory(cnci.nbClient),
 		gatewayManagers:        sync.Map{},
 		eIPController:          eIPController,
+		remoteNodesNoRouter:    sets.New[string](),
 	}
 
 	if config.OVNKubernetesFeature.EnableInterconnect {
@@ -737,7 +743,7 @@ func (oc *SecondaryLayer2NetworkController) addUpdateRemoteNodeEvent(node *corev
 
 	if util.IsNetworkSegmentationSupportEnabled() && oc.IsPrimaryNetwork() {
 		if syncZoneIC && config.OVNKubernetesFeature.EnableInterconnect {
-			portUpdateFn := oc.addRouterPortForRemoteNodeGR
+			portUpdateFn := oc.addRouterSetupForRemoteNodeGR
 			if !oc.usesTransitRouter {
 				portUpdateFn = oc.addSwitchPortForRemoteNodeGR
 			}
@@ -813,7 +819,30 @@ func (oc *SecondaryLayer2NetworkController) addSwitchPortForRemoteNodeGR(node *c
 	return nil
 }
 
-func (oc *SecondaryLayer2NetworkController) addRouterPortForRemoteNodeGR(node *corev1.Node) error {
+func (oc *SecondaryLayer2NetworkController) cleanupSwitchPortForRemoteNodeGR(nodeName string) error {
+	logicalSwitchPort := &nbdb.LogicalSwitchPort{
+		Name: types.SwitchToRouterPrefix + oc.GetNetworkScopedSwitchName(types.OVNLayer2Switch) + "_" + nodeName,
+	}
+	sw := &nbdb.LogicalSwitch{Name: oc.GetNetworkScopedSwitchName(types.OVNLayer2Switch)}
+	return libovsdbops.DeleteLogicalSwitchPorts(oc.nbClient, sw, logicalSwitchPort)
+}
+
+func (oc *SecondaryLayer2NetworkController) addRouterSetupForRemoteNodeGR(node *corev1.Node) error {
+	if oc.remoteNodesNoRouter.Has(node.Name) {
+		// remote node uses old topology
+		if util.UDNLayer2NodeUsesTransitRouter(node, oc.GetNetworkName()) {
+			// node has just been upgraded
+			// upgrade remote node connection
+			// delete old switch port
+			if err := oc.cleanupSwitchPortForRemoteNodeGR(node.Name); err != nil {
+				return err
+			}
+			oc.remoteNodesNoRouter.Delete(node.Name)
+		} else {
+			// node is still using old topology
+			return oc.addSwitchPortForRemoteNodeGR(node)
+		}
+	}
 	transitRouterInfo, err := getTransitRouterInfo(node)
 	if err != nil {
 		return nil
@@ -871,7 +900,7 @@ func (oc *SecondaryLayer2NetworkController) addRouterPortForRemoteNodeGR(node *c
 	return nil
 }
 
-func (oc *SecondaryLayer2NetworkController) cleanupRemoteNodeGR(nodeName string) error {
+func (oc *SecondaryLayer2NetworkController) cleanupRouterSetupForRemoteNodeGR(nodeName string) error {
 	transitPort := &nbdb.LogicalRouterPort{
 		Name: types.TransitRouterToRouterPrefix + oc.GetNetworkScopedGWRouterName(nodeName),
 	}
@@ -914,7 +943,7 @@ func (oc *SecondaryLayer2NetworkController) deleteNodeEvent(node *corev1.Node) e
 
 	if oc.usesTransitRouter {
 		// this is a no-op for local nodes
-		if err := oc.cleanupRemoteNodeGR(node.Name); err != nil {
+		if err := oc.cleanupRouterSetupForRemoteNodeGR(node.Name); err != nil {
 			return fmt.Errorf("failed to cleanup remote node %q gateway: %w", node.Name, err)
 		}
 		oc.syncZoneICFailed.Delete(node.Name)
@@ -1130,7 +1159,6 @@ func (oc *SecondaryLayer2NetworkController) setTopologyType() error {
 	if !hasRunningPods {
 		// start using the new topology now
 		oc.usesTransitRouter = true
-		oc.topologyUpgrade = true
 	}
 	return nil
 }
@@ -1316,6 +1344,9 @@ func (oc *SecondaryLayer2NetworkController) syncNodes(nodes []interface{}) error
 	if err := oc.BaseSecondaryLayer2NetworkController.syncNodes(nodes); err != nil {
 		return err
 	}
+	if err := oc.setRemoteNodesNoRouter(); err != nil {
+		return fmt.Errorf("failed to find remote nodes without transit router: %w", err)
+	}
 	foundNodeNames := sets.New[string]()
 	foundNodes := make([]*corev1.Node, len(nodes))
 	for i, obj := range nodes {
@@ -1362,8 +1393,38 @@ func (oc *SecondaryLayer2NetworkController) syncNodes(nodes []interface{}) error
 	}
 
 	for _, staleNodeName := range staleNodeNames {
-		if err = oc.cleanupRemoteNodeGR(staleNodeName); err != nil {
+		if err = oc.cleanupRouterSetupForRemoteNodeGR(staleNodeName); err != nil {
 			klog.Errorf("Failed to cleanup the transit router resources from OVN Northbound db for the stale node %s: %v", staleNodeName, err)
+		}
+	}
+	return nil
+}
+
+// setRemoteNodesNoRouter finds remote nodes that do not use transit router.
+func (oc *SecondaryLayer2NetworkController) setRemoteNodesNoRouter() error {
+	sw, err := libovsdbops.GetLogicalSwitch(oc.nbClient, &nbdb.LogicalSwitch{
+		Name: oc.GetNetworkScopedSwitchName(""),
+	})
+	if err != nil {
+		if errors.Is(err, libovsdbclient.ErrNotFound) {
+			klog.V(5).Infof("Logical switch %s not found, no remote nodes to find", oc.GetNetworkScopedSwitchName(""))
+			return nil
+		}
+		return fmt.Errorf("failed to get logical switch %s: %w", oc.GetNetworkScopedSwitchName(""), err)
+	}
+	for _, port := range sw.Ports {
+		lsp, err := libovsdbops.GetLogicalSwitchPort(oc.nbClient, &nbdb.LogicalSwitchPort{
+			UUID: port,
+		})
+		if err != nil {
+			if errors.Is(err, libovsdbclient.ErrNotFound) {
+				continue // port not found, skip
+			}
+			return fmt.Errorf("failed to get logical switch port %s: %w", port, err)
+		}
+		if lsp.Type == "remote" && lsp.ExternalIDs[types.NodeExternalID] != "" {
+			nodeName := lsp.ExternalIDs[types.NodeExternalID]
+			oc.remoteNodesNoRouter.Insert(nodeName)
 		}
 	}
 	return nil
