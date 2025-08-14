@@ -506,6 +506,23 @@ func (oc *SecondaryLayer2NetworkController) Cleanup() error {
 		klog.Errorf("Failed to delete load balancer groups on network: %q, error: %v", oc.GetNetworkName(), err)
 	}
 
+	// cleanup UDN Layer2 node annotations
+	existingNodes, err := oc.watchFactory.GetNodes()
+	if err != nil {
+		return fmt.Errorf("error in retrieving the nodes: %v", err)
+	}
+
+	for _, node := range existingNodes {
+		if !oc.isLocalZoneNode(node) {
+			// only remove annotations for local zone nodes
+			continue
+		}
+		err = oc.setUDNLayer2NodeUsesTransitRouter(node.Name, oc.GetNetworkName(), true)
+		if err != nil {
+			return fmt.Errorf("failed to clear node %q subnet annotation for network %s",
+				node.Name, networkName)
+		}
+	}
 	return nil
 }
 

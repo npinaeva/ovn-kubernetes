@@ -155,6 +155,8 @@ const (
 	// }",
 	ovnUDNLayer2NodeGRLRPTunnelIDs = "k8s.ovn.org/udn-layer2-node-gateway-router-lrp-tunnel-ids"
 
+	OvnUDNLayer2NodeUsesTransitRouter = "k8s.ovn.org/udn-layer2-node-uses-transit-router"
+
 	// ovnNodeEncapIPs is used to indicate encap IPs set on the node
 	OVNNodeEncapIPs = "k8s.ovn.org/node-encap-ips"
 
@@ -508,6 +510,22 @@ func UpdateUDNLayer2NodeGRLRPTunnelIDs(annotations map[string]string, netName st
 		return nil, err
 	}
 	return annotations, nil
+}
+
+func UDNLayer2NodeUsesTransitRouter(node *corev1.Node, netName string) bool {
+	var nodeTunMap map[string]json.RawMessage
+	annotation, ok := node.Annotations[OvnUDNLayer2NodeUsesTransitRouter]
+	if !ok {
+		return false
+	}
+	if err := json.Unmarshal([]byte(annotation), &nodeTunMap); err != nil {
+		return false
+	}
+	if _, ok := nodeTunMap[netName]; ok {
+		return true
+	}
+
+	return false
 }
 
 // PrimaryIfAddrAnnotation represents IPv4 and/or IPv6 addresses stored in node annotations.
@@ -1224,6 +1242,36 @@ func updateNetworkAnnotation(annotations map[string]string, netName string, id i
 	}
 	annotations[annotationName] = string(bytes)
 	return nil
+}
+
+func UpdateLayer2TransitRouterAnnotation(annotations map[string]string, netName string, remove bool) (bool, error) {
+	// First get the all ids for all existing networks
+	netMap, err := parseNetworkMapAnnotation(annotations, OvnUDNLayer2NodeUsesTransitRouter)
+	if err != nil {
+		if !IsAnnotationNotSetError(err) {
+			return false, fmt.Errorf("failed to parse node network id annotation %q: %v",
+				annotations, err)
+		}
+		// in the case that the annotation does not exist
+		netMap = map[string]string{}
+	}
+
+	if !remove && netMap[netName] == "true" || remove && netMap[netName] == "" {
+		return false, nil
+	}
+	if remove {
+		delete(netMap, netName)
+	} else {
+		netMap[netName] = "true"
+	}
+
+	// Marshal all network ids back to annotations.
+	bytes, err := json.Marshal(netMap)
+	if err != nil {
+		return false, err
+	}
+	annotations[OvnUDNLayer2NodeUsesTransitRouter] = string(bytes)
+	return true, nil
 }
 
 // UpdateNetworkIDAnnotation updates the ovnNetworkIDs annotation for the network name 'netName' with the network id 'networkID'.
