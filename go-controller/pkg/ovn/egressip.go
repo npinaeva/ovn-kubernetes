@@ -1904,19 +1904,19 @@ func (e *EgressIPController) generateCacheForEgressIP() (egressIPCache, error) {
 				}
 			} else {
 				if e.v4 {
-					nextHopIP, err := e.getTransitIP(node, false, ni)
+					nextHopIP, err := e.getTransitIP(node.Name, false)
 					if err != nil {
 						klog.V(5).Infof("Unable to fetch transit switch IPv4 for node %s: %v", node.Name, err)
 					} else {
-						r.v4TransitSwitch = nextHopIP.String()
+						r.v4TransitSwitch = nextHopIP
 					}
 				}
 				if e.v6 {
-					nextHopIP, err := e.getTransitIP(node, true, ni)
+					nextHopIP, err := e.getTransitIP(node.Name, true)
 					if err != nil {
 						klog.V(5).Infof("Unable to fetch transit switch IPv6 for node %s: %v", node.Name, err)
 					} else {
-						r.v6TransitSwitch = nextHopIP.String()
+						r.v6TransitSwitch = nextHopIP
 					}
 				}
 			}
@@ -2645,7 +2645,32 @@ func (e *EgressIPController) getGatewayNextHop(ni util.NetInfo, node *corev1.Nod
 		return e.getRouterPortIP(GetGWRouterPortName(ni, node.Name, e.nbClient), isIPv6)
 	} else if ni.TopologyType() == types.Layer2Topology {
 		if Layer2TransitRouterTopology(e.nbClient, ni) {
-			return e.getTransitIP(node, isIPv6, ni)
+			upgradedeNode, err := Layer2NodeTransitRouterTopology(e.nbClient, ni, node.Name)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get transit router for node %s: %w", node.Name, err)
+			}
+			if upgradedeNode {
+				transitRouterInfo, err := getTransitRouterInfo(node)
+				if err != nil {
+					return nil, err
+				}
+				nodeTransitIP, err := util.MatchFirstIPNetFamily(isIPv6, transitRouterInfo.gatewayRouterNets)
+				if err != nil {
+					return nil, fmt.Errorf("could not find transit router IP of node %v for this family %v: %v", node, isIPv6, err)
+				}
+				return nodeTransitIP.IP, nil
+			} else {
+				gwIPs, err := udn.GetGWRouterIPs(node, ni)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get gateway router IPs for node %s: %w", node.Name, err)
+				}
+				gwIP, err := util.MatchFirstIPNetFamily(isIPv6, gwIPs)
+				if err != nil {
+					return nil, fmt.Errorf("failed to find a gateway router IP for node %s that matches the EgressIP IP family (is IPv6: %v): %w",
+						node.Name, isIPv6, err)
+				}
+				return gwIP.IP, nil
+			}
 		}
 		// If egress node is local, retrieve the external default gateway next hops from the Node L3 gateway annotation.
 		// We must pick one of the next hops to add to the LRP reroute next hops to not break ECMP.
@@ -2744,28 +2769,21 @@ func ipFamilyName(isIPv6 bool) string {
 	return string(IPFamilyValueV4)
 }
 
-func (e *EgressIPController) getTransitIP(node *corev1.Node, wantsIPv6 bool, ni util.NetInfo) (net.IP, error) {
-	if Layer2TransitRouterTopology(e.nbClient, ni) {
-		transitRouterInfo, err := getTransitRouterInfo(node)
-		if err != nil {
-			return nil, err
-		}
-		nodeTransitIP, err := util.MatchFirstIPNetFamily(wantsIPv6, transitRouterInfo.gatewayRouterNets)
-		if err != nil {
-			return nil, fmt.Errorf("could not find transit router IP of node %v for this family %v: %v", node, wantsIPv6, err)
-		}
-		return nodeTransitIP.IP, nil
-	} else {
-		nodeTransitIPs, err := util.ParseNodeTransitSwitchPortAddrs(node)
-		if err != nil {
-			return nil, fmt.Errorf("unable to fetch transit switch IP for node %s: %w", node.Name, err)
-		}
-		nodeTransitIP, err := util.MatchFirstIPNetFamily(wantsIPv6, nodeTransitIPs)
-		if err != nil {
-			return nil, fmt.Errorf("could not find transit switch IP of node %v for this family %v: %v", node, wantsIPv6, err)
-		}
-		return nodeTransitIP.IP, nil
+func (e *EgressIPController) getTransitIP(nodeName string, wantsIPv6 bool) (string, error) {
+	// fetch node annotation of the egress node
+	node, err := e.watchFactory.GetNode(nodeName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get node %s: %w", nodeName, err)
 	}
+	nodeTransitIPs, err := util.ParseNodeTransitSwitchPortAddrs(node)
+	if err != nil {
+		return "", fmt.Errorf("unable to fetch transit switch IP for node %s: %w", nodeName, err)
+	}
+	nodeTransitIP, err := util.MatchFirstIPNetFamily(wantsIPv6, nodeTransitIPs)
+	if err != nil {
+		return "", fmt.Errorf("could not find transit switch IP of node %v for this family %v: %v", node, wantsIPv6, err)
+	}
+	return nodeTransitIP.IP.String(), nil
 }
 
 // getNextHop attempts to determine whether an egress IP should be routed through the Nodes primary network interface (isOVNetwork = true)
@@ -2778,7 +2796,7 @@ func (e *EgressIPController) getNextHop(ni util.NetInfo, egressNodeName, egressI
 	if err != nil {
 		return "", err
 	}
-	if isLocalZoneEgressNode || Layer2NoRouterTopology(e.nbClient, ni) {
+	if isLocalZoneEgressNode || ni.TopologyType() == types.Layer2Topology {
 		// isOVNNetwork is true when an EgressIP is "assigned" to the Nodes primary interface (breth0). Ext traffic will egress breth0.
 		// is OVNNetwork is false when the EgressIP is assigned to a host secondary interface (not breth0). Ext traffic will egress this interface.
 		if isOVNNetwork {
@@ -2803,7 +2821,7 @@ func (e *EgressIPController) getNextHop(ni util.NetInfo, egressNodeName, egressI
 	}
 
 	if config.OVNKubernetesFeature.EnableInterconnect {
-		nextHopIP, err := e.getTransitIP(egressNode, isEgressIPv6, ni)
+		nextHopIP, err := e.getTransitIP(egressNodeName, isEgressIPv6)
 		if err != nil && !errors.Is(err, libovsdbclient.ErrNotFound) {
 			return "", fmt.Errorf("unable to fetch transit switch IP for node %s: %v", egressNodeName, err)
 		} else if err != nil {
@@ -2811,7 +2829,7 @@ func (e *EgressIPController) getNextHop(ni util.NetInfo, egressNodeName, egressI
 				egressIPName, egressIP, err)
 			return "", nil
 		}
-		return nextHopIP.String(), nil
+		return nextHopIP, nil
 	}
 	return "", nil
 }

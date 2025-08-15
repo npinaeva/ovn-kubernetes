@@ -1475,3 +1475,32 @@ func (oc *SecondaryLayer2NetworkController) setRemoteNodesNoRouter() error {
 	}
 	return nil
 }
+
+func Layer2NodeTransitRouterTopology(nbClient libovsdbclient.Client, netInfo util.NetInfo, nodeName string) (bool, error) {
+	if netInfo.TopologyType() != types.Layer2Topology {
+		return false, nil
+	}
+	sw, err := libovsdbops.GetLogicalSwitch(nbClient, &nbdb.LogicalSwitch{
+		Name: netInfo.GetNetworkScopedSwitchName(""),
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to get logical switch %s: %w", netInfo.GetNetworkScopedSwitchName(""), err)
+	}
+	for _, port := range sw.Ports {
+		lsp, err := libovsdbops.GetLogicalSwitchPort(nbClient, &nbdb.LogicalSwitchPort{
+			UUID: port,
+		})
+		if err != nil {
+			if errors.Is(err, libovsdbclient.ErrNotFound) {
+				continue // port not found, skip
+			}
+			return false, fmt.Errorf("failed to get logical switch port %s: %w", port, err)
+		}
+		if lsp.Type == "remote" && lsp.ExternalIDs[types.NodeExternalID] != "" {
+			if lsp.ExternalIDs[types.NodeExternalID] == nodeName {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
