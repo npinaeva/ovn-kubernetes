@@ -339,6 +339,8 @@ parse_args() {
                                                 ;;
             -dns | --enable-dnsnameresolver )   OVN_ENABLE_DNSNAMERESOLVER=true
                                                 ;;
+            -manifests | --generate-manifests ) GENERATE_MANIFESTS=true
+                                                ;;
             -h | --help )                       usage
                                                 exit
                                                 ;;
@@ -521,6 +523,7 @@ set_default_params() {
   # Used for multi cluster setups
   KIND_CREATE=${KIND_CREATE:-true}
   KIND_ADD_NODES=${KIND_ADD_NODES:-false}
+  GENERATE_MANIFESTS=${GENERATE_MANIFESTS:-false}
   KIND_CLUSTER_NAME=${KIND_CLUSTER_NAME:-ovn}
   # Setup KUBECONFIG patch based on cluster-name
   export KUBECONFIG=${KUBECONFIG:-${HOME}/${KIND_CLUSTER_NAME}.conf}
@@ -1187,6 +1190,16 @@ fi
 
 check_ipv6
 set_cluster_cidr_ip_families
+
+if [ "$GENERATE_MANIFESTS" == true ]; then
+  build_ovn_image
+  detect_apiserver_url
+  create_ovn_kube_manifests
+  install_ovn_image
+  install_ovn
+  exit 0
+fi
+
 if [ "$KIND_CREATE" == true ]; then
     create_kind_cluster
     if [ "$RUN_IN_CONTAINER" == true ]; then

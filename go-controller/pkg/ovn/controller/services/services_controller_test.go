@@ -93,6 +93,7 @@ func newControllerWithDBSetupForNetwork(dbSetup libovsdbtest.TestSetup, netInfo 
 		networkmanager.Default().Interface(),
 		recorder,
 		netInfo,
+		false,
 	)
 	if err != nil {
 		return nil, err

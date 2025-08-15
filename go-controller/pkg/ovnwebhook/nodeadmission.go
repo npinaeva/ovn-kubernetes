@@ -67,6 +67,14 @@ var interconnectNodeAnnotationChecks = map[string]checkNodeAnnot{
 
 		return fmt.Errorf("%s can only be set to %s, it cannot be removed", util.OvnNodeMigratedZoneName, nodeName)
 	},
+	util.OvnUDNLayer2NodeUsesTransitRouter: func(v annotationChange, nodeName string) error {
+		// it is allowed for the annotation to be set to <nodeName>
+		if v.action == added {
+			return nil
+		}
+
+		return fmt.Errorf("%s can only be added", util.OvnUDNLayer2NodeUsesTransitRouter)
+	},
 }
 
 // hybridOverlayNodeAnnotationChecks holds annotations allowed for ovnkube-node:<nodeName> users hybrid overlay environments
