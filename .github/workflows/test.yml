@@ -221,6 +221,26 @@ jobs:
            COVERALLS=1 CONTAINER_RUNNABLE=1 make check
         popd
 
+    - name: Find Comment on a failed CI run
+      if: failure()
+      uses: peter-evans/find-comment@v3
+      id: fc
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        comment-author: 'github-actions[bot]'
+        body-includes: CI test run failed
+
+
+    - name: Make comment on failed CI run
+      if: ${{ failure() && steps.fc.outputs.comment-id == '' }}
+      uses: peter-evans/create-or-update-comment@v5
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        body: |
+          CI test run failed, please report failed tests: this is the only way to get them fixed!
+          See https://ovn-kubernetes.io/ci/ci#ci-fails-what-do-i-do for more details on what to do.
+
+
     - name: Build docker image - from current pr branch
       if: steps.is_pr_image_build_needed.outputs.PR_IMAGE_RESTORED != 'true' && success()
       run: |
@@ -681,6 +701,25 @@ jobs:
       with:
         name: kind-logs-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: /tmp/kind/logs
+
+    - name: Find Comment on a failed CI run
+      uses: peter-evans/find-comment@v3
+      id: fc
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        comment-author: 'github-actions[bot]'
+        body-includes: CI test run failed
+
+
+    - name: Make comment on failed CI run
+      if: ${{ failure() && steps.fc.outputs.comment-id == '' }}
+      uses: peter-evans/create-or-update-comment@v5
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        body: |
+          CI test run failed, please report failed tests: this is the only way to get them fixed!
+          See https://ovn-kubernetes.io/ci/ci#ci-fails-what-do-i-do for more details on what to do.
+
 
   e2e-dual-conversion:
     name: e2e-dual-conversion
