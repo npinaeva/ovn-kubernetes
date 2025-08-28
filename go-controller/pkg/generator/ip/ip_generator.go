@@ -48,10 +48,10 @@ func (ipGenerator *IPGenerator) GenerateIPPair(idx int) (*net.IPNet, *net.IPNet,
 		// We need to reserver 4 IPs since two of them will be
 		// "network" aka first network IP and "broadcast" aka last network IP,
 		// we use 2 more for GW and transit router ports
-		numberOfIPs := 4
-		v4Mask := net.CIDRMask(30, 32)
+		numberOfIPs := 2
+		v4Mask := net.CIDRMask(31, 32)
 		// nodeIDs start from 1, netIP is the first IP of the subnet
-		firstIP := utilnet.AddIPOffset(ipGenerator.netBaseIP, (idx-1)*numberOfIPs+1)
+		firstIP := utilnet.AddIPOffset(ipGenerator.netBaseIP, (idx-1)*numberOfIPs)
 		return &net.IPNet{IP: firstIP, Mask: v4Mask}, &net.IPNet{IP: iputils.NextIP(firstIP), Mask: v4Mask}, nil
 	} else {
 		numberOfIPs := 2
