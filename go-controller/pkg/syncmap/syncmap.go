@@ -7,7 +7,7 @@ import (
 )
 
 type keyLock struct {
-	mutex      sync.Mutex
+	mutex      sync.RWMutex
 	refCounter int
 }
 
@@ -21,14 +21,15 @@ func (m *keyLock) delRef() {
 
 func newKeyLock() *keyLock {
 	c := keyLock{
-		sync.Mutex{},
+		sync.RWMutex{},
 		0,
 	}
 	return &c
 }
 
 // SyncMapComparableKey is a map with lockable keys. It allows to lock the key regardless of whether the entry for
-// given key exists. When key is locked other threads can't read/write the key.
+// given key exists. Key can be locked for Read/Write, Read lock can only be used to Load entry,
+// Write lock should be used for entry modifications like LoadOrStore, Delete.
 type SyncMapComparableKey[T1 comparable, T2 any] struct {
 	// keyLocksMutex needs to be locked for every read/write operation with keyLocks.
 	// refCounter should be updated for keyLock before keyLocksMutex lock is released.
@@ -78,6 +79,27 @@ func (c *SyncMapComparableKey[T1, T2]) UnlockKey(lockedKey T1) {
 	kLock.mutex.Unlock()
 }
 
+// RUnlockKey unlocks previously read locked key. Call it when all the operations with the given key are done.
+func (c *SyncMapComparableKey[T1, T2]) RUnlockKey(lockedKey T1) {
+	c.keyLocksMutex.Lock()
+	defer c.keyLocksMutex.Unlock()
+	kLock, ok := c.keyLocks[lockedKey]
+	if !ok {
+		// this should never happen, since UnlockKey should only be called when the key is Locked
+		// and when the key is Locked, c.keyLocks[key] will always have its keyLock.
+		// similar to calling Unlock() on unlocked mutex
+		klog.Errorf("Unlocking non-existing key %s", lockedKey)
+		return
+	}
+	kLock.delRef()
+	// keyLock can be deleted when the last request is being shut down (that is refCount=0)
+	// next load request for this key will create a new keyLock
+	if kLock.refCounter == 0 {
+		delete(c.keyLocks, lockedKey)
+	}
+	kLock.mutex.RUnlock()
+}
+
 // loadOrStoreKeyLock returns the existing value for keyLock if present.
 // Otherwise, it stores and returns the given value.
 // The loaded result is true if the value was loaded, false if stored.
@@ -118,12 +140,36 @@ func (c *SyncMapComparableKey[T1, T2]) LockKey(key T1) {
 	kLock.mutex.Lock()
 }
 
+// RLockKey should be called before reading entry value,
+// it guarantees safe read access to the key.
+// RUnlock(key) should be called once the work for this key is done to unlock other threads
+// After the key is unlocked there are no guarantees for the entry for given key
+// TODO test Rlock
+func (c *SyncMapComparableKey[T1, T2]) RLockKey(key T1) {
+	// if the kLock is not present, we create a new one
+	// lock it before adding, to prevent other threads from getting the key lock after we add it
+	newKLock := newKeyLock()
+	newKLock.mutex.RLock()
+	kLock, loaded := c.loadOrStoreKeyLock(key, newKLock)
+	// loadOrStoreKeyLock will increase refCounter for the returned kLock,
+	// meaning that other threads won't be able to delete this kLock until we decrease refCounter
+	// with UnlockKey().
+	// if newKLock was stored (!loaded), we already have it locked
+	if !loaded {
+		return
+	}
+	// existing kLock was loaded, unlock newKLock since we didn't use it
+	newKLock.mutex.RUnlock()
+	// lock the key
+	kLock.mutex.RLock()
+}
+
 // Load returns the value stored in the map for a key, or nil if no value is present.
 // The loaded result indicates whether value was found in the map.
-func (c *SyncMapComparableKey[T1, T2]) Load(lockedKey T1) (value T2, loaded bool) {
+func (c *SyncMapComparableKey[T1, T2]) Load(rLockedKey T1) (value T2, loaded bool) {
 	c.entriesMutex.Lock()
 	defer c.entriesMutex.Unlock()
-	entry, ok := c.entries[lockedKey]
+	entry, ok := c.entries[rLockedKey]
 	return entry, ok
 }
 
@@ -173,6 +219,13 @@ func (c *SyncMapComparableKey[T1, T2]) GetKeys() []T1 {
 func (c *SyncMapComparableKey[T1, T2]) DoWithLock(key T1, f func(key T1) error) error {
 	c.LockKey(key)
 	defer c.UnlockKey(key)
+	return f(key)
+}
+
+// DoWithRLock locks and unlocks given key for reading
+func (c *SyncMapComparableKey[T1, T2]) DoWithRLock(key T1, f func(key T1) error) error {
+	c.RLockKey(key)
+	defer c.RUnlockKey(key)
 	return f(key)
 }
 
