@@ -212,6 +212,7 @@ jobs:
       if: steps.is_pr_image_build_needed.outputs.PR_IMAGE_RESTORED != 'true' && success()
       run: |
         set -x
+        exit 1
         pushd go-controller
            # exit early if there are gofmt or go mod / vendor issues
            make gofmt
