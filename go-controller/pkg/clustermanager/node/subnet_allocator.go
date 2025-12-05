@@ -3,6 +3,7 @@ package node
 import (
 	"fmt"
 	"net"
+	"slices"
 	"sync"
 
 	"k8s.io/klog/v2"
@@ -30,6 +31,7 @@ type SubnetAllocator interface {
 	ReleaseNetworks(string, ...*net.IPNet) error
 	// ReleaseAllNetworks releases all networks owned by the given owner
 	ReleaseAllNetworks(string)
+	FreeUnusedRanges() []*net.IPNet
 }
 
 type BaseSubnetAllocator struct {
@@ -92,6 +94,27 @@ func (sna *BaseSubnetAllocator) AddNetworkRange(network *net.IPNet, hostSubnetLe
 		sna.v4ranges = append(sna.v4ranges, snr)
 	}
 	return nil
+}
+
+func (sna *BaseSubnetAllocator) FreeUnusedRanges() []*net.IPNet {
+	sna.Lock()
+	defer sna.Unlock()
+	var freedSubnets []*net.IPNet
+	slices.DeleteFunc(sna.v4ranges, func(snr *subnetAllocatorRange) bool {
+		if snr.usage() == 0 {
+			freedSubnets = append(freedSubnets, snr.network)
+			return true
+		}
+		return false
+	})
+	slices.DeleteFunc(sna.v6ranges, func(snr *subnetAllocatorRange) bool {
+		if snr.usage() == 0 {
+			freedSubnets = append(freedSubnets, snr.network)
+			return true
+		}
+		return false
+	})
+	return freedSubnets
 }
 
 // MarkAllocatedNetworks will mark the given subnets as already allocated by
