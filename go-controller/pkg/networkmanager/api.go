@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 
-	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	nadinformers "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions/k8s.cni.cncf.io/v1"
 
 	coreinformers "k8s.io/client-go/informers/core/v1"
@@ -76,34 +75,14 @@ type Interface interface {
 	// a NAD is deleted/created/updated. These operations should be non-blocking and lightweight.
 	RegisterNADHandler(handler handlerFunc) error
 
-	// Reconcile allows for a manually invoked reconciliation of a network manager
-	Reconcile(key string)
-
-	// UpdateNADState sets a NAD as active or inactive, and then Reconciles the NAD again
-	UpdateNADState(key string, active bool)
-
-	// NotifyNetworkRefChange allows a controller manager to signal that a node’s
-	// reference to a given network became active/inactive so the running network
-	// controller can enqueue reconciliation work (e.g., via its retry framework).
-	NotifyNetworkRefChange(networkName, node string, active bool)
+	// NodeHasNAD returns true if the given node has at least one pod using the NAD.
+	// It only works for the nadControllers created with a non-empty filterNADsOnNode.
+	NodeHasNAD(node, nad string) bool
 }
 
 // Controller handles the runtime of the package
 type Controller interface {
 	Interface() Interface
-	Start() error
-	Stop()
-}
-
-// Tracker reports whether a node currently has any pods or assignments using a given NAD.
-type Tracker interface {
-	// NodeHasNAD returns true if the given node has at least one pod using the NAD.
-	NodeHasNAD(node, nad string) bool
-}
-
-// TrackerController is the minimal interface ControllerManager needs.
-type TrackerController interface {
-	Tracker
 	Start() error
 	Stop()
 }
@@ -132,6 +111,7 @@ func NewForCluster(
 		ovnClient,
 		recorder,
 		tunnelKeysAllocator,
+		"",
 	)
 }
 
@@ -150,6 +130,8 @@ func NewForZone(
 		nil,
 		nil,
 		nil,
+		// TODO maybe check if config.Default.Zone == ovntypes.OvnDefaultZone and pass "" then?
+		zone,
 	)
 }
 
@@ -168,6 +150,7 @@ func NewForNode(
 		nil,
 		nil,
 		nil,
+		node,
 	)
 }
 
@@ -183,8 +166,9 @@ func new(
 	ovnClient *util.OVNClusterManagerClientset,
 	recorder record.EventRecorder,
 	tunnelKeysAllocator *id.TunnelKeysAllocator,
+	filterNADsOnNode string,
 ) (Controller, error) {
-	return newController(name, zone, node, cm, wf, ovnClient, recorder, tunnelKeysAllocator)
+	return newController(name, zone, node, cm, wf, ovnClient, recorder, tunnelKeysAllocator, filterNADsOnNode)
 }
 
 // ControllerManager manages controllers. Needs to be provided in order to build
@@ -198,10 +182,6 @@ type ControllerManager interface {
 	// Reconcile informs the manager of network changes that other managed
 	// network aware controllers might be interested in.
 	Reconcile(name string, old, new util.NetInfo) error
-
-	// Filter provides a hook where a controller manager can determine if the network should be
-	// processed or not. Returning true means the NAD should be skipped/filtered out.
-	Filter(nad *nettypes.NetworkAttachmentDefinition) (bool, error)
 }
 
 // ReconcilableNetworkController is a network controller that can reconcile
@@ -230,6 +210,9 @@ type BaseNetworkController interface {
 type NetworkController interface {
 	BaseNetworkController
 	Cleanup() error
+	// HandleNetworkRefChange is only used by nadControllers with non-empty filterNADsOnNode
+	// to inform the network controller that a relevant NAD has become active or inactive.
+	// Every networkController that uses NodeHasNAD function must implement this method.
 	HandleNetworkRefChange(node string, active bool)
 }
 
@@ -286,10 +269,8 @@ func (nm defaultNetworkManager) RegisterNADHandler(_ handlerFunc) error {
 	return nil
 }
 
-func (nm defaultNetworkManager) UpdateNADState(_ string, _ bool) {}
-
-func (nm defaultNetworkManager) Reconcile(_ string) {}
-
-func (nm defaultNetworkManager) NotifyNetworkRefChange(_, _ string, _ bool) {}
+func (nm defaultNetworkManager) NodeHasNAD(_ string, _ string) bool {
+	return false
+}
 
 var def Controller = &defaultNetworkManager{}

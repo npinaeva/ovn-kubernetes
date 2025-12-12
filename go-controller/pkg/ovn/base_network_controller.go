@@ -188,10 +188,6 @@ type BaseNetworkController struct {
 
 	// Controller used for programming OVN for Network QoS
 	nqosController *nqoscontroller.Controller
-
-	// Tracker used to track nodes with active NADs on them
-	// Used by Dynamic UDN allocation
-	nodeNADTracker networkmanager.Tracker
 }
 
 func (oc *BaseNetworkController) reconcile(netInfo util.NetInfo, setNodeFailed func(string)) error {
@@ -218,37 +214,6 @@ func (oc *BaseNetworkController) reconcile(netInfo util.NetInfo, setNodeFailed f
 		// the network is reconfigured to serve a namespace.
 		reconcileNamespaces = sets.NewString(netInfo.GetNADNamespaces()...).Difference(
 			sets.NewString(oc.GetNADNamespaces()...))
-	}
-
-	// nodeTracker is nil for localnet, since it doesn't do anything for remote nodes
-	if config.OVNKubernetesFeature.EnableDynamicUDNAllocation && oc.nodeNADTracker != nil {
-		// look for remote nodes to reconcile
-		nads := oc.GetNADs()
-		nodes, err := oc.watchFactory.GetNodes()
-		if err != nil {
-			return fmt.Errorf("failed to get nodes for reconciling network: %s, error: %w", oc.GetNetworkName(), err)
-		}
-		for _, node := range nodes {
-			if _, present := oc.localZoneNodes.Load(node.Name); present {
-				// local node
-				continue
-			}
-			// remote node: reconcile if any NAD is active, else remove
-			active := false
-			for _, nad := range nads {
-				if oc.nodeNADTracker.NodeHasNAD(node.Name, nad) {
-					active = true
-					break
-				}
-			}
-			if active {
-				// we need to reconcile and configure these remote nodes
-				reconcileNodes.Insert(node.Name)
-			} else {
-				// ensure the remote node is removed
-				removeNodes.Insert(node.Name)
-			}
-		}
 	}
 
 	// set the new NetInfo, point of no return

@@ -4,8 +4,6 @@ import (
 	"context"
 	"sync"
 
-	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
-
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -49,10 +47,6 @@ func (fcm *FakeControllerManager) GetDefaultNetworkController() ReconcilableNetw
 
 func (fcm *FakeControllerManager) Reconcile(_ string, _, _ util.NetInfo) error {
 	return nil
-}
-
-func (fcm *FakeControllerManager) Filter(_ *nettypes.NetworkAttachmentDefinition) (bool, error) {
-	return false, nil
 }
 
 type FakeNetworkManager struct {
@@ -136,12 +130,6 @@ func (fnm *FakeNetworkManager) GetActiveNetwork(networkName string) util.NetInfo
 	return fnm.GetNetwork(networkName)
 }
 
-func (fnm *FakeNetworkManager) UpdateNADState(key string, _ bool) {
-	fnm.Reconciled = append(fnm.Reconciled, key)
-}
-
-func (fnm *FakeNetworkManager) NotifyNetworkRefChange(_, _ string, _ bool) {}
-
 func (fnm *FakeNetworkManager) GetActiveNetworkNamespaces(networkName string) ([]string, error) {
 	namespaces := make([]string, 0)
 	for namespaceName, primaryNAD := range fnm.PrimaryNetworks {
@@ -164,6 +152,4 @@ func (fnm *FakeNetworkManager) DoWithLock(f func(network util.NetInfo) error) er
 	return errors.Join(errs...)
 }
 
-func (fnm *FakeNetworkManager) Reconcile(name string) {
-	fnm.Reconciled = append(fnm.Reconciled, name)
-}
+func (fnm *FakeNetworkManager) NodeHasNAD(node, nad string) bool { return false }

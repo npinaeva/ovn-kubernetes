@@ -709,7 +709,7 @@ func TestNetworkGracePeriodCleanup(t *testing.T) {
 
 	// --- Step 2: Mark as inactive (simulate ForceReconcile behavior) ---
 	// This triggers the grace-period timer, not immediate deletion.
-	nadController.UpdateNADState(util.GetNADName(nad.Namespace, nad.Name), false)
+	nadController.updateNADState(util.GetNADName(nad.Namespace, nad.Name), false)
 	// --- Step 3: Verify that within the grace period, cleanup has NOT happened ---
 	g.Consistently(func() []string {
 		tcm.Lock()
