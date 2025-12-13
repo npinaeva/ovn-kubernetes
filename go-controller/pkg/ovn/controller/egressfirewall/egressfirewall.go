@@ -110,7 +110,6 @@ type matchKind int
 type cacheEntry struct {
 	pgName          string
 	hasNodeSelector bool
-	stale           bool
 }
 
 type EFController struct {
@@ -244,6 +243,36 @@ func (oc *EFController) initialSync() error {
 		namespace := acl.ExternalIDs[libovsdbops.ObjectNameKey.String()]
 		if !existingEFNamespaces[namespace] {
 			deletedNSACLs[namespace] = append(deletedNSACLs[namespace], acl)
+			continue
+		}
+		// Seed cache from NBDB for namespaces that have an EF and associated ACL/PG.
+		if _, cached := oc.cache.Load(namespace); cached {
+			continue
+		}
+		p := func(item *nbdb.PortGroup) bool {
+			if len(item.ACLs) == 0 {
+				return false
+			}
+			if item.ExternalIDs[libovsdbops.OwnerTypeKey.String()] != libovsdbops.NamespaceOwnerType {
+				return false
+			}
+			if acl.ExternalIDs[libovsdbops.ObjectNameKey.String()] != item.ExternalIDs[libovsdbops.ObjectNameKey.String()] {
+				return false
+			}
+
+			for _, aclUUID := range item.ACLs {
+				if acl.UUID == aclUUID {
+					return true
+				}
+			}
+			return false
+		}
+		foundPGs, err := libovsdbops.FindPortGroupsWithPredicate(oc.nbClient, p)
+		if err != nil {
+			return fmt.Errorf("failed to search for port groups during egress firewall cache seed: %w", err)
+		}
+		if len(foundPGs) > 0 {
+			oc.cache.Store(namespace, &cacheEntry{pgName: foundPGs[0].Name})
 		}
 	}
 
@@ -317,10 +346,10 @@ func (oc *EFController) initialSync() error {
 
 func (oc *EFController) Start() error {
 	klog.Infof("Starting EgressFirewall controller")
-	if err := controller.StartWithInitialSync(oc.initialSync, oc.controller, oc.nodeController); err != nil {
+	if err := oc.networkManager.RegisterNADHandler(oc.handleNetworkEvent); err != nil {
 		return err
 	}
-	return oc.networkManager.RegisterNADHandler(oc.handleNetworkEvent)
+	return controller.StartWithInitialSync(oc.initialSync, oc.controller, oc.nodeController)
 }
 
 func (oc *EFController) Stop() {
@@ -332,40 +361,17 @@ func (oc *EFController) handleNetworkEvent(nadName string, info util.NetInfo, re
 	if info != nil && !info.IsPrimaryNetwork() { // egressFirewall only supported for primary network
 		return
 	}
-	if removed { // delete case
-		namespace, _, err := cache.SplitMetaNamespaceKey(nadName)
-		if err != nil {
-			klog.Errorf("%s: failed splitting key %s: %v", oc.name, nadName, err)
-			return
-		}
-		oc.cache.LockKey(namespace)
-		entry, ok := oc.cache.Load(namespace)
-		if !ok {
-			oc.cache.UnlockKey(namespace)
-			return // no cache entry exists, so nothing to remove
-		}
-		entry.stale = true
-		oc.cache.UnlockKey(namespace)
-		klog.V(3).Infof("NAD removed for egress firewall in namespace: %q. Will sync.", namespace)
-		oc.controller.Reconcile(fmt.Sprintf("%s/%s", namespace, egressFirewallName))
-		return
-	}
-	// add/update case
 	namespace, _, err := cache.SplitMetaNamespaceKey(nadName)
 	if err != nil {
 		klog.Errorf("%s: failed splitting key %s: %v", oc.name, nadName, err)
 		return
 	}
-	ef, err := oc.efLister.EgressFirewalls(namespace).Get(egressFirewallName)
-	if err != nil || ef == nil {
-		return
+	eventType := "add/update"
+	if removed {
+		eventType = "remove"
 	}
-	key, err := cache.MetaNamespaceKeyFunc(ef)
-	if err != nil {
-		return
-	}
-	klog.V(3).Infof("NAD add/update for egress firewall in namespace: %q. Will sync.", namespace)
-	oc.controller.Reconcile(key)
+	klog.V(4).Infof("NAD %s for egress firewall in namespace: %q. Will sync.", eventType, namespace)
+	oc.controller.Reconcile(fmt.Sprintf("%s/%s", namespace, egressFirewallName))
 }
 
 func (oc *EFController) sync(key string) (updateErr error) {
@@ -376,7 +382,9 @@ func (oc *EFController) sync(key string) (updateErr error) {
 	}
 	shouldRemove := false
 	shouldAddUpdate := false
+	var currentPgName string
 
+	efExists := false
 	ef, err := oc.efLister.EgressFirewalls(namespace).Get(efName)
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
@@ -385,32 +393,56 @@ func (oc *EFController) sync(key string) (updateErr error) {
 		shouldRemove = true
 	} else {
 		shouldAddUpdate = true
+		efExists = true
+		currentPgName, err = oc.getNamespacePortGroupName(namespace)
+		if err != nil {
+			if util.IsInvalidPrimaryNetworkError(err) {
+				// namespace requires P-UDN, but it does not exist, we should still remove and return error
+				shouldRemove = true
+				shouldAddUpdate = false
+				updateErr = err
+			} else {
+				return fmt.Errorf("failed to get portgroup for egress firewall %s/%s namespace: %w",
+					namespace, efName, err)
+			}
+
+		}
 	}
 
 	oc.cache.LockKey(namespace)
 	defer oc.cache.UnlockKey(namespace)
 
-	if entry, ok := oc.cache.Load(namespace); ok {
-		if entry.stale {
+	cachedPGName := ""
+	if cached, ok := oc.cache.Load(namespace); ok {
+		cachedPGName = cached.pgName
+		// If the port-group name changed (e.g., primary NAD switch), remove old PG ACLs first.
+		if currentPgName != "" && cached.pgName != currentPgName {
 			shouldRemove = true
 		}
 	}
 
 	if shouldRemove {
 		// delete case
-		entry, ok := oc.cache.Load(namespace)
-		if !ok {
-			return nil
+		if cachedPGName == "" {
+			// Fallback: if we have a current PG name, use it; otherwise attempt to compute it.
+			if currentPgName != "" {
+				cachedPGName = currentPgName
+			} else {
+				pgName, err := oc.getNamespacePortGroupName(namespace)
+				if err != nil {
+					return nil
+				}
+				cachedPGName = pgName
+			}
 		}
 		klog.Infof("Removing egress firewall %s", key)
-		pgName := entry.pgName
 
 		p := libovsdbops.GetPredicate[*nbdb.ACL](oc.GetEgressFirewallACLDbIDsNoRule(namespace), nil)
 		invalidACLs, err := libovsdbops.FindACLsWithPredicate(oc.nbClient, p)
 		if err != nil {
 			return fmt.Errorf("error finding ACLs for egress firewall %s: %w", key, err)
 		}
-		if err := libovsdbops.DeleteACLsFromPortGroups(oc.nbClient, []string{pgName}, invalidACLs...); err != nil {
+		if err := libovsdbops.DeleteACLsFromPortGroups(oc.nbClient, []string{cachedPGName}, invalidACLs...); err != nil {
 			return fmt.Errorf("error deleting stale ACLs for egress firewall %s: %w", key, err)
 		}
 		oc.cache.Delete(namespace)
@@ -426,24 +458,20 @@ func (oc *EFController) sync(key string) (updateErr error) {
 		}
 		metrics.DecrementEgressFirewallCount()
 	}
+	if efExists {
+		defer func() {
+			if statusErr := oc.setEgressFirewallStatus(ef, updateErr); statusErr != nil {
+				updateErr = utilerrors.Join(updateErr, fmt.Errorf("failed to update egress firewall status %s, error: %w",
+					GetEgressFirewallNamespacedName(ef), statusErr))
+			}
+		}()
+	}
 
 	if !shouldAddUpdate {
-		return nil
+		return updateErr
 	}
 
-	// add/update case
-	defer func() {
-		if statusErr := oc.setEgressFirewallStatus(ef, updateErr); statusErr != nil {
-			updateErr = utilerrors.Join(updateErr, fmt.Errorf("failed to update egress firewall status %s, error: %w",
-				GetEgressFirewallNamespacedName(ef), statusErr))
-		}
-	}()
-
-	pgName, err := oc.getNamespacePortGroupName(ef.Namespace)
-	if err != nil {
-		return fmt.Errorf("failed to get portgroup for egress firewall %s/%s namespace: %w",
-			ef.Namespace, ef.Name, err)
-	}
+	pgName := currentPgName
 
 	entry := &cacheEntry{
 		pgName: pgName,
@@ -995,7 +1023,7 @@ func getNamespacePortGroupDbIDs(ns string, controller string) *libovsdbops.DbObj
 func (oc *EFController) getNamespacePortGroupName(namespace string) (string, error) {
 	activeNetwork, err := oc.networkManager.GetActiveNetworkForNamespace(namespace)
 	if err != nil {
-		return "", fmt.Errorf("failed to get active network for namespace %s: %v", namespace, err)
+		return "", fmt.Errorf("failed to get active network for namespace %s: %w", namespace, err)
 	}
 	ownerController := activeNetwork.GetNetworkName() + "-network-controller"
 	return libovsdbutil.GetPortGroupName(getNamespacePortGroupDbIDs(namespace, ownerController)), nil
