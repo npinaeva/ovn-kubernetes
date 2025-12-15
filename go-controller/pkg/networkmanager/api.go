@@ -20,6 +20,9 @@ const (
 	MaxNetworks = 4096
 )
 
+type NADHandlerID uint64
+type handlerFunc func(nadName string, netInfo util.NetInfo, removed bool)
+
 // Interface is the main package entrypoint and provides network related
 // information to the rest of the project.
 type Interface interface {
@@ -54,7 +57,9 @@ type Interface interface {
 	// a NAD is deleted/created/updated. These operations should be non-blocking and lightweight.
 	// An optional needsUpdate predicate can be provided to filter update events; if nil, all updates
 	// are delivered.
-	RegisterNADHandler(handler handlerFunc, needsUpdate func(old, new *nettypes.NetworkAttachmentDefinition) bool) error
+	RegisterNADHandler(handler handlerFunc, needsUpdate func(old, new *nettypes.NetworkAttachmentDefinition) bool) (NADHandlerID, error)
+	// DeRegisterNADHandler removes a previously registered handler by its ID.
+	DeRegisterNADHandler(id NADHandlerID) error
 }
 
 // Controller handles the runtime of the package
@@ -229,8 +234,10 @@ func (nm defaultNetworkManager) GetActiveNetwork(network string) util.NetInfo {
 	return &util.DefaultNetInfo{}
 }
 
-func (nm defaultNetworkManager) RegisterNADHandler(_ handlerFunc, _ func(old, new *nettypes.NetworkAttachmentDefinition) bool) error {
-	return nil
+func (nm defaultNetworkManager) RegisterNADHandler(_ handlerFunc, _ func(old, new *nettypes.NetworkAttachmentDefinition) bool) (NADHandlerID, error) {
+	return 0, nil
 }
+
+func (nm defaultNetworkManager) DeRegisterNADHandler(_ NADHandlerID) error { return nil }
 
 var def Controller = &defaultNetworkManager{}

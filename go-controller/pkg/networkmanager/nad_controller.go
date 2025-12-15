@@ -46,9 +46,6 @@ type watchFactory interface {
 	NodeCoreInformer() coreinformers.NodeInformer
 }
 
-// handlerFunc used as a callback that can be registered with nadController
-type handlerFunc func(nadName string, info util.NetInfo, removed bool)
-
 // nadController handles namespaced scoped NAD events and
 // manages cluster scoped networks defined in those NADs. NADs are mostly
 // referenced from pods to give them access to the network. Different NADs can
@@ -81,10 +78,11 @@ type nadController struct {
 	networkIDAllocator  id.Allocator
 	tunnelKeysAllocator *id.TunnelKeysAllocator
 	nadClient           nadclientset.Interface
-	// handlers is a list of registered callbacks and their optional update predicates.
-	handlers []nadHandler
+	// handlers is a map of registered callbacks and their optional update predicates.
+	handlers      map[NADHandlerID]nadHandler
+	nextHandlerID NADHandlerID
 	// handlerUpdateDecisions holds per-update handler subsets keyed by NAD namespaced key.
-	handlerUpdateDecisions map[string][]nadHandler
+	handlerUpdateDecisions map[string][]NADHandlerID
 }
 
 type nadHandler struct {
@@ -110,8 +108,8 @@ func newController(
 		networkController:      newNetworkController(name, zone, node, cm, wf),
 		nads:                   map[string]string{},
 		primaryNADs:            map[string]string{},
-		handlers:               []nadHandler{},
-		handlerUpdateDecisions: map[string][]nadHandler{},
+		handlers:               map[NADHandlerID]nadHandler{},
+		handlerUpdateDecisions: map[string][]NADHandlerID{},
 	}
 
 	if ovnClient != nil {
@@ -192,19 +190,50 @@ func (c *nadController) Stop() {
 // usage of this function should be restricted to lightweight, non-blocking operations.
 // An optional needsUpdate predicate can be provided to filter update events for this handler;
 // if nil, all updates are delivered.
-func (c *nadController) RegisterNADHandler(handler handlerFunc, needsUpdate func(old, new *nettypes.NetworkAttachmentDefinition) bool) error {
+// Returns an opaque handler ID that can be used to deregister the handler.
+func (c *nadController) RegisterNADHandler(handler handlerFunc, needsUpdate func(old, new *nettypes.NetworkAttachmentDefinition) bool) (NADHandlerID, error) {
 	c.Lock()
 	defer c.Unlock()
-	c.handlers = append(c.handlers, nadHandler{handler: handler, needsUpdate: needsUpdate})
+	c.nextHandlerID++
+	id := c.nextHandlerID
+	c.handlers[id] = nadHandler{handler: handler, needsUpdate: needsUpdate}
+	return id, nil
+}
+
+// DeRegisterNADHandler removes a previously registered handler.
+func (c *nadController) DeRegisterNADHandler(id NADHandlerID) error {
+	c.Lock()
+	defer c.Unlock()
+	if _, ok := c.handlers[id]; !ok {
+		return fmt.Errorf("handler %d not found", id)
+	}
+	delete(c.handlers, id)
+	// remove from pending decisions
+	for key, ids := range c.handlerUpdateDecisions {
+		filtered := make([]NADHandlerID, 0, len(ids))
+		for _, hid := range ids {
+			if hid != id {
+				filtered = append(filtered, hid)
+			}
+		}
+		c.handlerUpdateDecisions[key] = filtered
+	}
 	return nil
 }
 
 func (c *nadController) executeHandlers(nadName string, info util.NetInfo, removed bool) {
-	handlers, ok := c.handlerUpdateDecisions[nadName]
-	if !ok {
-		handlers = c.handlers
+	ids, ok := c.handlerUpdateDecisions[nadName]
+	if ok {
+		for _, id := range ids {
+			h, exists := c.handlers[id]
+			if !exists {
+				continue
+			}
+			h.handler(nadName, info, removed)
+		}
+		return
 	}
-	for _, h := range handlers {
+	for _, h := range c.handlers {
 		h.handler(nadName, info, removed)
 	}
 }
@@ -469,10 +498,10 @@ func (c *nadController) nadNeedsUpdate(oldNAD, newNAD *nettypes.NetworkAttachmen
 	}
 	if len(c.handlers) > 0 {
 		key := fmt.Sprintf("%s/%s", newNAD.Namespace, newNAD.Name)
-		selected := make([]nadHandler, 0, len(c.handlers))
-		for _, h := range c.handlers {
+		selected := make([]NADHandlerID, 0, len(c.handlers))
+		for id, h := range c.handlers {
 			if h.needsUpdate == nil || h.needsUpdate(oldNAD, newNAD) {
-				selected = append(selected, h)
+				selected = append(selected, id)
 			}
 		}
 		c.Lock()

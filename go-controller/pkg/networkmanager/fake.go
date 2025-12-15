@@ -2,6 +2,7 @@ package networkmanager
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
@@ -54,15 +55,31 @@ type FakeNetworkManager struct {
 	// if netInfo is nil, it represents a namespace which contains the required UDN label but with no valid network. It will return invalid network error.
 	PrimaryNetworks map[string]util.NetInfo
 	HandlerFuncs    []handlerFunc
+	handlerIDs      []NADHandlerID
 	// UDNNamespaces are a list of namespaces that require UDN for primary network
 	UDNNamespaces sets.Set[string]
 }
 
-func (fnm *FakeNetworkManager) RegisterNADHandler(h handlerFunc, _ func(old, new *nettypes.NetworkAttachmentDefinition) bool) error {
+func (fnm *FakeNetworkManager) RegisterNADHandler(h handlerFunc, _ func(old, new *nettypes.NetworkAttachmentDefinition) bool) (NADHandlerID, error) {
 	fnm.Lock()
 	defer fnm.Unlock()
 	fnm.HandlerFuncs = append(fnm.HandlerFuncs, h)
-	return nil
+	id := NADHandlerID(len(fnm.HandlerFuncs))
+	fnm.handlerIDs = append(fnm.handlerIDs, id)
+	return id, nil
+}
+
+func (fnm *FakeNetworkManager) DeRegisterNADHandler(id NADHandlerID) error {
+	fnm.Lock()
+	defer fnm.Unlock()
+	for i, hid := range fnm.handlerIDs {
+		if hid == id {
+			fnm.handlerIDs = append(fnm.handlerIDs[:i], fnm.handlerIDs[i+1:]...)
+			fnm.HandlerFuncs = append(fnm.HandlerFuncs[:i], fnm.HandlerFuncs[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("handler %d not found", id)
 }
 
 func (fnm *FakeNetworkManager) TriggerHandlers(nadName string, info util.NetInfo, removed bool) {

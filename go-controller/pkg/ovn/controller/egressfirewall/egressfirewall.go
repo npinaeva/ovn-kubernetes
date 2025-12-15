@@ -131,6 +131,7 @@ type EFController struct {
 	controller     controller.Controller
 	nodeController controller.Controller
 	networkManager networkmanager.Interface
+	nadHandlerID   networkmanager.NADHandlerID
 	// dnsNameResolver is used for resolving the IP addresses of DNS names
 	// used in egress firewall rules
 	dnsNameResolver dnsnameresolver.DNSNameResolver
@@ -346,14 +347,21 @@ func (oc *EFController) initialSync() error {
 
 func (oc *EFController) Start() error {
 	klog.Infof("Starting EgressFirewall controller")
-	if err := oc.networkManager.RegisterNADHandler(oc.handleNetworkEvent, nil); err != nil {
+	id, err := oc.networkManager.RegisterNADHandler(oc.handleNetworkEvent, nil)
+	if err != nil {
 		return err
 	}
+	oc.nadHandlerID = id
 	return controller.StartWithInitialSync(oc.initialSync, oc.controller, oc.nodeController)
 }
 
 func (oc *EFController) Stop() {
 	klog.Infof("%s: shutting down", oc.name)
+	if oc.nadHandlerID != 0 {
+		if err := oc.networkManager.DeRegisterNADHandler(oc.nadHandlerID); err != nil {
+			klog.Warningf("%s: failed to deregister NAD handler: %v", oc.name, err)
+		}
+	}
 	controller.Stop(oc.nodeController, oc.controller)
 }
 

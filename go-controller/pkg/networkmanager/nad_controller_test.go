@@ -1114,14 +1114,15 @@ func TestRegisterNADHandlerWithNeedsUpdate(t *testing.T) {
 	}
 
 	c := &nadController{
-		handlerUpdateDecisions: make(map[string][]nadHandler),
+		handlers:               make(map[NADHandlerID]nadHandler),
+		handlerUpdateDecisions: make(map[string][]NADHandlerID),
 	}
 	var calledA, calledB bool
-	err := c.RegisterNADHandler(func(string, util.NetInfo, bool) { calledA = true }, func(old, new *nettypes.NetworkAttachmentDefinition) bool {
+	_, err := c.RegisterNADHandler(func(string, util.NetInfo, bool) { calledA = true }, func(_, new *nettypes.NetworkAttachmentDefinition) bool {
 		return new.Spec.Config == "new"
 	})
 	g.Expect(err).ToNot(gomega.HaveOccurred())
-	err = c.RegisterNADHandler(func(string, util.NetInfo, bool) { calledB = true }, func(_, _ *nettypes.NetworkAttachmentDefinition) bool {
+	_, err = c.RegisterNADHandler(func(string, util.NetInfo, bool) { calledB = true }, func(_, _ *nettypes.NetworkAttachmentDefinition) bool {
 		return false
 	})
 	g.Expect(err).ToNot(gomega.HaveOccurred())
@@ -1132,9 +1133,7 @@ func TestRegisterNADHandlerWithNeedsUpdate(t *testing.T) {
 	g.Expect(c.handlerUpdateDecisions[key]).To(gomega.HaveLen(1))
 
 	// executeHandlers should only call the selected handler
-	c.Lock()
 	c.executeHandlers(key, nil, false)
-	c.Unlock()
 	g.Expect(calledA).To(gomega.BeTrue())
 	g.Expect(calledB).To(gomega.BeFalse())
 }
@@ -1143,19 +1142,45 @@ func TestExecuteHandlersFallsBackToAllHandlers(t *testing.T) {
 	g := gomega.NewWithT(t)
 
 	c := &nadController{
-		handlerUpdateDecisions: make(map[string][]nadHandler),
+		handlers:               make(map[NADHandlerID]nadHandler),
+		handlerUpdateDecisions: make(map[string][]NADHandlerID),
 	}
 	var order []string
-	err := c.RegisterNADHandler(func(string, util.NetInfo, bool) { order = append(order, "a") }, nil)
+	_, err := c.RegisterNADHandler(func(string, util.NetInfo, bool) { order = append(order, "a") }, nil)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
-	err = c.RegisterNADHandler(func(string, util.NetInfo, bool) { order = append(order, "b") }, nil)
+	_, err = c.RegisterNADHandler(func(string, util.NetInfo, bool) { order = append(order, "b") }, nil)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	// No per-NAD decision stored, should run all handlers in registration order.
-	c.Lock()
 	c.executeHandlers("ns/nad", nil, false)
-	c.Unlock()
 	g.Expect(order).To(gomega.Equal([]string{"a", "b"}))
+}
+
+func TestDeRegisterNADHandler(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	c := &nadController{
+		handlers:               make(map[NADHandlerID]nadHandler),
+		handlerUpdateDecisions: make(map[string][]NADHandlerID),
+	}
+	var calledA, calledB bool
+	idA, err := c.RegisterNADHandler(func(string, util.NetInfo, bool) { calledA = true }, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	idB, err := c.RegisterNADHandler(func(string, util.NetInfo, bool) { calledB = true }, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// Pretend we already computed decisions for an update containing both handlers.
+	key := "ns/nad"
+	c.handlerUpdateDecisions[key] = []NADHandlerID{idA, idB}
+
+	// Remove handler A and ensure it is no longer executed.
+	g.Expect(c.DeRegisterNADHandler(idA)).To(gomega.Succeed())
+	c.executeHandlers(key, nil, false)
+	g.Expect(calledA).To(gomega.BeFalse())
+	g.Expect(calledB).To(gomega.BeTrue())
+
+	// Removing an unknown handler should error.
+	g.Expect(c.DeRegisterNADHandler(999)).ToNot(gomega.Succeed())
 }
 
 func buildNAD(name, namespace string, network *ovncnitypes.NetConf) (*nettypes.NetworkAttachmentDefinition, error) {
