@@ -81,8 +81,15 @@ type nadController struct {
 	networkIDAllocator  id.Allocator
 	tunnelKeysAllocator *id.TunnelKeysAllocator
 	nadClient           nadclientset.Interface
-	// handlerFuncs is a list of registered callbacks that is called during events
-	handlerFuncs []handlerFunc
+	// handlers is a list of registered callbacks and their optional update predicates.
+	handlers []nadHandler
+	// handlerUpdateDecisions holds per-update handler subsets keyed by NAD namespaced key.
+	handlerUpdateDecisions map[string][]nadHandler
+}
+
+type nadHandler struct {
+	handler     handlerFunc
+	needsUpdate func(old, new *nettypes.NetworkAttachmentDefinition) bool
 }
 
 func newController(
@@ -96,14 +103,15 @@ func newController(
 	tunnelKeysAllocator *id.TunnelKeysAllocator,
 ) (*nadController, error) {
 	c := &nadController{
-		name:              fmt.Sprintf("[%s NAD controller]", name),
-		recorder:          recorder,
-		nadLister:         wf.NADInformer().Lister(),
-		nodeLister:        wf.NodeCoreInformer().Lister(),
-		networkController: newNetworkController(name, zone, node, cm, wf),
-		nads:              map[string]string{},
-		primaryNADs:       map[string]string{},
-		handlerFuncs:      []handlerFunc{},
+		name:                   fmt.Sprintf("[%s NAD controller]", name),
+		recorder:               recorder,
+		nadLister:              wf.NADInformer().Lister(),
+		nodeLister:             wf.NodeCoreInformer().Lister(),
+		networkController:      newNetworkController(name, zone, node, cm, wf),
+		nads:                   map[string]string{},
+		primaryNADs:            map[string]string{},
+		handlers:               []nadHandler{},
+		handlerUpdateDecisions: map[string][]nadHandler{},
 	}
 
 	if ovnClient != nil {
@@ -180,19 +188,24 @@ func (c *nadController) Stop() {
 	c.networkController.Stop()
 }
 
-// RegisterNADHandler adds functions to be executed during NAD delete/update/add calls
-// usage of this function should be restricted to lightweight, non-blocking operations
-func (c *nadController) RegisterNADHandler(handler handlerFunc) error {
+// RegisterNADHandler adds functions to be executed during NAD delete/update/add calls.
+// usage of this function should be restricted to lightweight, non-blocking operations.
+// An optional needsUpdate predicate can be provided to filter update events for this handler;
+// if nil, all updates are delivered.
+func (c *nadController) RegisterNADHandler(handler handlerFunc, needsUpdate func(old, new *nettypes.NetworkAttachmentDefinition) bool) error {
 	c.Lock()
 	defer c.Unlock()
-	c.handlerFuncs = append(c.handlerFuncs, handler)
+	c.handlers = append(c.handlers, nadHandler{handler: handler, needsUpdate: needsUpdate})
 	return nil
 }
 
-// executeHandlers should always be done under lock
 func (c *nadController) executeHandlers(nadName string, info util.NetInfo, removed bool) {
-	for _, handler := range c.handlerFuncs {
-		handler(nadName, info, removed)
+	handlers, ok := c.handlerUpdateDecisions[nadName]
+	if !ok {
+		handlers = c.handlers
+	}
+	for _, h := range handlers {
+		h.handler(nadName, info, removed)
 	}
 }
 
@@ -325,6 +338,8 @@ func (c *nadController) syncNAD(key string, nad *nettypes.NetworkAttachmentDefin
 
 	c.Lock()
 	defer c.Unlock()
+	// ensure we clear stored update decisions for this NAD once this sync completes
+	defer delete(c.handlerUpdateDecisions, key)
 	// We can only have one primary NAD per namespace
 	primaryNAD := c.primaryNADs[namespace]
 	if nadNetwork != nil && nadNetwork.IsPrimaryNetwork() && primaryNAD != "" && primaryNAD != key {
@@ -445,10 +460,26 @@ func (c *nadController) nadNeedsUpdate(oldNAD, newNAD *nettypes.NetworkAttachmen
 	}
 
 	// also reconcile the network in case its route advertisements changed
-	return !reflect.DeepEqual(oldNAD.Spec, newNAD.Spec) ||
+	interesting := !reflect.DeepEqual(oldNAD.Spec, newNAD.Spec) ||
 		oldNAD.Annotations[types.OvnRouteAdvertisementsKey] != newNAD.Annotations[types.OvnRouteAdvertisementsKey] ||
 		oldNAD.Annotations[types.OvnNetworkIDAnnotation] != newNAD.Annotations[types.OvnNetworkIDAnnotation] ||
 		oldNAD.Annotations[types.OvnNetworkNameAnnotation] != newNAD.Annotations[types.OvnNetworkNameAnnotation]
+	if !interesting {
+		return false
+	}
+	if len(c.handlers) > 0 {
+		key := fmt.Sprintf("%s/%s", newNAD.Namespace, newNAD.Name)
+		selected := make([]nadHandler, 0, len(c.handlers))
+		for _, h := range c.handlers {
+			if h.needsUpdate == nil || h.needsUpdate(oldNAD, newNAD) {
+				selected = append(selected, h)
+			}
+		}
+		c.Lock()
+		c.handlerUpdateDecisions[key] = selected
+		c.Unlock()
+	}
+	return true
 }
 
 func (c *nadController) GetActiveNetworkForNamespace(namespace string) (util.NetInfo, error) {

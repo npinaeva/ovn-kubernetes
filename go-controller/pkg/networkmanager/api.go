@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+
 	"k8s.io/client-go/tools/record"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/allocator/id"
@@ -50,7 +52,9 @@ type Interface interface {
 	GetActiveNetworkNamespaces(networkName string) ([]string, error)
 	// RegisterNADHandler allows external entities to register callback functions to be executed when
 	// a NAD is deleted/created/updated. These operations should be non-blocking and lightweight.
-	RegisterNADHandler(handler handlerFunc) error
+	// An optional needsUpdate predicate can be provided to filter update events; if nil, all updates
+	// are delivered.
+	RegisterNADHandler(handler handlerFunc, needsUpdate func(old, new *nettypes.NetworkAttachmentDefinition) bool) error
 }
 
 // Controller handles the runtime of the package
@@ -225,7 +229,7 @@ func (nm defaultNetworkManager) GetActiveNetwork(network string) util.NetInfo {
 	return &util.DefaultNetInfo{}
 }
 
-func (nm defaultNetworkManager) RegisterNADHandler(_ handlerFunc) error {
+func (nm defaultNetworkManager) RegisterNADHandler(_ handlerFunc, _ func(old, new *nettypes.NetworkAttachmentDefinition) bool) error {
 	return nil
 }
 

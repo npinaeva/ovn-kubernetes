@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 
+	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -56,7 +58,7 @@ type FakeNetworkManager struct {
 	UDNNamespaces sets.Set[string]
 }
 
-func (fnm *FakeNetworkManager) RegisterNADHandler(h handlerFunc) error {
+func (fnm *FakeNetworkManager) RegisterNADHandler(h handlerFunc, _ func(old, new *nettypes.NetworkAttachmentDefinition) bool) error {
 	fnm.Lock()
 	defer fnm.Unlock()
 	fnm.HandlerFuncs = append(fnm.HandlerFuncs, h)

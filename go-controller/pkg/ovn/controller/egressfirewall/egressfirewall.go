@@ -346,7 +346,7 @@ func (oc *EFController) initialSync() error {
 
 func (oc *EFController) Start() error {
 	klog.Infof("Starting EgressFirewall controller")
-	if err := oc.networkManager.RegisterNADHandler(oc.handleNetworkEvent); err != nil {
+	if err := oc.networkManager.RegisterNADHandler(oc.handleNetworkEvent, nil); err != nil {
 		return err
 	}
 	return controller.StartWithInitialSync(oc.initialSync, oc.controller, oc.nodeController)

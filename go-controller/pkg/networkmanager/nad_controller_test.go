@@ -1097,6 +1097,67 @@ func TestResourceCleanup(t *testing.T) {
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 }
 
+func TestRegisterNADHandlerWithNeedsUpdate(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	makeNAD := func(config string, rv string) *nettypes.NetworkAttachmentDefinition {
+		return &nettypes.NetworkAttachmentDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "nad",
+				Namespace:       "ns",
+				ResourceVersion: rv,
+			},
+			Spec: nettypes.NetworkAttachmentDefinitionSpec{
+				Config: config,
+			},
+		}
+	}
+
+	c := &nadController{
+		handlerUpdateDecisions: make(map[string][]nadHandler),
+	}
+	var calledA, calledB bool
+	err := c.RegisterNADHandler(func(string, util.NetInfo, bool) { calledA = true }, func(old, new *nettypes.NetworkAttachmentDefinition) bool {
+		return new.Spec.Config == "new"
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	err = c.RegisterNADHandler(func(string, util.NetInfo, bool) { calledB = true }, func(_, _ *nettypes.NetworkAttachmentDefinition) bool {
+		return false
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// Different config should be interesting and store only the first handler
+	g.Expect(c.nadNeedsUpdate(makeNAD("old", "1"), makeNAD("new", "2"))).To(gomega.BeTrue())
+	key := "ns/nad"
+	g.Expect(c.handlerUpdateDecisions[key]).To(gomega.HaveLen(1))
+
+	// executeHandlers should only call the selected handler
+	c.Lock()
+	c.executeHandlers(key, nil, false)
+	c.Unlock()
+	g.Expect(calledA).To(gomega.BeTrue())
+	g.Expect(calledB).To(gomega.BeFalse())
+}
+
+func TestExecuteHandlersFallsBackToAllHandlers(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	c := &nadController{
+		handlerUpdateDecisions: make(map[string][]nadHandler),
+	}
+	var order []string
+	err := c.RegisterNADHandler(func(string, util.NetInfo, bool) { order = append(order, "a") }, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	err = c.RegisterNADHandler(func(string, util.NetInfo, bool) { order = append(order, "b") }, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// No per-NAD decision stored, should run all handlers in registration order.
+	c.Lock()
+	c.executeHandlers("ns/nad", nil, false)
+	c.Unlock()
+	g.Expect(order).To(gomega.Equal([]string{"a", "b"}))
+}
+
 func buildNAD(name, namespace string, network *ovncnitypes.NetConf) (*nettypes.NetworkAttachmentDefinition, error) {
 	config, err := json.Marshal(network)
 	if err != nil {
