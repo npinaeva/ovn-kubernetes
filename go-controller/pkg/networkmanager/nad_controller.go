@@ -82,7 +82,7 @@ type nadController struct {
 	handlers      map[NADHandlerID]nadHandler
 	nextHandlerID NADHandlerID
 	// handlerUpdateDecisions holds per-update handler subsets keyed by NAD namespaced key.
-	handlerUpdateDecisions map[string][]NADHandlerID
+	handlerUpdateDecisions map[string]sets.Set[NADHandlerID]
 }
 
 type nadHandler struct {
@@ -109,7 +109,7 @@ func newController(
 		nads:                   map[string]string{},
 		primaryNADs:            map[string]string{},
 		handlers:               map[NADHandlerID]nadHandler{},
-		handlerUpdateDecisions: map[string][]NADHandlerID{},
+		handlerUpdateDecisions: map[string]sets.Set[NADHandlerID]{},
 	}
 
 	if ovnClient != nil {
@@ -208,31 +208,36 @@ func (c *nadController) DeRegisterNADHandler(id NADHandlerID) error {
 		return fmt.Errorf("handler %d not found", id)
 	}
 	delete(c.handlers, id)
-	// remove from pending decisions
-	for key, ids := range c.handlerUpdateDecisions {
-		filtered := make([]NADHandlerID, 0, len(ids))
-		for _, hid := range ids {
-			if hid != id {
-				filtered = append(filtered, hid)
-			}
-		}
-		c.handlerUpdateDecisions[key] = filtered
-	}
 	return nil
 }
 
+// executeHandlers runs handlers that were added by RegisterNADHandler.
+// Must be called with nadController locked.
 func (c *nadController) executeHandlers(nadName string, info util.NetInfo, removed bool) {
-	ids, ok := c.handlerUpdateDecisions[nadName]
+	// delete, no need to filter handler notification
+	if removed {
+		for _, h := range c.handlers {
+			h.handler(nadName, info, removed)
+		}
+		return
+	}
+
+	// add/update handlers should be filtered
+	idSet, ok := c.handlerUpdateDecisions[nadName]
 	if ok {
-		for _, id := range ids {
+		for _, id := range idSet.UnsortedList() {
 			h, exists := c.handlers[id]
 			if !exists {
 				continue
 			}
 			h.handler(nadName, info, removed)
 		}
+		// reset handlers after notifying all
+		delete(c.handlerUpdateDecisions, nadName)
 		return
 	}
+
+	// add/update with no filtering, send all
 	for _, h := range c.handlers {
 		h.handler(nadName, info, removed)
 	}
@@ -367,8 +372,6 @@ func (c *nadController) syncNAD(key string, nad *nettypes.NetworkAttachmentDefin
 
 	c.Lock()
 	defer c.Unlock()
-	// ensure we clear stored update decisions for this NAD once this sync completes
-	defer delete(c.handlerUpdateDecisions, key)
 	// We can only have one primary NAD per namespace
 	primaryNAD := c.primaryNADs[namespace]
 	if nadNetwork != nil && nadNetwork.IsPrimaryNetwork() && primaryNAD != "" && primaryNAD != key {
@@ -496,18 +499,31 @@ func (c *nadController) nadNeedsUpdate(oldNAD, newNAD *nettypes.NetworkAttachmen
 	if !interesting {
 		return false
 	}
-	if len(c.handlers) > 0 {
-		key := fmt.Sprintf("%s/%s", newNAD.Namespace, newNAD.Name)
-		selected := make([]NADHandlerID, 0, len(c.handlers))
-		for id, h := range c.handlers {
-			if h.needsUpdate == nil || h.needsUpdate(oldNAD, newNAD) {
-				selected = append(selected, id)
-			}
-		}
-		c.Lock()
-		c.handlerUpdateDecisions[key] = selected
-		c.Unlock()
+
+	c.RLock()
+	handlerCount := len(c.handlers)
+	c.RUnlock()
+
+	if handlerCount == 0 {
+		return true
 	}
+
+	key := fmt.Sprintf("%s/%s", newNAD.Namespace, newNAD.Name)
+
+	c.Lock()
+	for id, h := range c.handlers {
+		if h.needsUpdate == nil || h.needsUpdate(oldNAD, newNAD) {
+			set := c.handlerUpdateDecisions[key]
+			if set == nil {
+				set = sets.New[NADHandlerID]()
+				c.handlerUpdateDecisions[key] = set
+			}
+			// we only add handlers here. Removal happens after we executeHandlers for add/update.
+			set.Insert(id)
+		}
+	}
+	c.Unlock()
+
 	return true
 }
 

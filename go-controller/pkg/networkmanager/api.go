@@ -57,6 +57,8 @@ type Interface interface {
 	// a NAD is deleted/created/updated. These operations should be non-blocking and lightweight.
 	// An optional needsUpdate predicate can be provided to filter update events; if nil, all updates
 	// are delivered.
+	// Note: when providing needsUpdate, you should check that the nadController nadNeedsUpdate function includes
+	// your update criteria!
 	RegisterNADHandler(handler handlerFunc, needsUpdate func(old, new *nettypes.NetworkAttachmentDefinition) bool) (NADHandlerID, error)
 	// DeRegisterNADHandler removes a previously registered handler by its ID.
 	DeRegisterNADHandler(id NADHandlerID) error
