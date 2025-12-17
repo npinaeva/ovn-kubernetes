@@ -21,7 +21,7 @@ const (
 )
 
 type NADHandlerID uint64
-type handlerFunc func(nadName string, netInfo util.NetInfo, removed bool)
+type handlerFunc func(nadName string)
 
 // Interface is the main package entrypoint and provides network related
 // information to the rest of the project.

@@ -80,9 +80,17 @@ type nadController struct {
 	networkIDAllocator  id.Allocator
 	tunnelKeysAllocator *id.TunnelKeysAllocator
 	nadClient           nadclientset.Interface
+
+	// handlersLock protects the handlers map and nextHandlerID
+	handlersLock sync.RWMutex
 	// handlers is a map of registered callbacks and their optional update predicates.
 	handlers      map[NADHandlerID]nadHandler
 	nextHandlerID NADHandlerID
+
+	// decisionsLock protects handlerUpdateDecisions
+	// handlersLock can be held while holding decisionsLock, but not vice versa
+	// it is only currently done in nadNeedsUpdate, be careful when adding more cases
+	decisionsLock sync.RWMutex
 	// handlerUpdateDecisions holds per-update handler subsets keyed by NAD namespaced key.
 	handlerUpdateDecisions map[string]sets.Set[NADHandlerID]
 }
@@ -194,8 +202,8 @@ func (c *nadController) Stop() {
 // if nil, all updates are delivered.
 // Returns an opaque handler ID that can be used to deregister the handler.
 func (c *nadController) RegisterNADHandler(handler handlerFunc, needsUpdate func(old, new *nettypes.NetworkAttachmentDefinition) bool) (NADHandlerID, error) {
-	c.Lock()
-	defer c.Unlock()
+	c.handlersLock.Lock()
+	defer c.handlersLock.Unlock()
 	c.nextHandlerID++
 	id := c.nextHandlerID
 	c.handlers[id] = nadHandler{handler: handler, needsUpdate: needsUpdate}
@@ -204,8 +212,8 @@ func (c *nadController) RegisterNADHandler(handler handlerFunc, needsUpdate func
 
 // DeRegisterNADHandler removes a previously registered handler.
 func (c *nadController) DeRegisterNADHandler(id NADHandlerID) error {
-	c.Lock()
-	defer c.Unlock()
+	c.handlersLock.Lock()
+	defer c.handlersLock.Unlock()
 	if _, ok := c.handlers[id]; !ok {
 		return fmt.Errorf("handler %d not found", id)
 	}
@@ -214,49 +222,39 @@ func (c *nadController) DeRegisterNADHandler(id NADHandlerID) error {
 }
 
 // executeHandlers runs handlers that were added by RegisterNADHandler.
-// Must be called with nadController locked.
-func (c *nadController) executeHandlers(nadName string, info util.NetInfo, removed bool) {
+func (c *nadController) executeHandlers(nadName string, removed bool, updateDecisions sets.Set[NADHandlerID]) {
+	c.handlersLock.RLock()
+	defer c.handlersLock.RUnlock()
 	// delete, no need to filter handler notification
 	if removed {
 		for _, h := range c.handlers {
-			h.handler(nadName, info, removed)
+			h.handler(nadName)
 		}
 		return
 	}
 	// add/update handlers should be filtered
-	idSet, ok := c.handlerUpdateDecisions[nadName]
-	if ok {
-		for _, id := range idSet.UnsortedList() {
-			if id == NetworkControllerUpdateID {
-				continue
-			}
-			if h, exists := c.handlers[id]; exists {
-				h.handler(nadName, info, removed)
-			}
+	for _, id := range updateDecisions.UnsortedList() {
+		if id == NetworkControllerUpdateID {
+			continue
 		}
-		// reset handlers after notifying all
-		delete(c.handlerUpdateDecisions, nadName)
-		return
-	}
-	// add/update with no filtering, send all
-	for _, h := range c.handlers {
-		h.handler(nadName, info, removed)
+		if h, exists := c.handlers[id]; exists {
+			h.handler(nadName)
+		}
 	}
 }
 
 // addDecision adds handler IDs to the decision set for the given key.
+// must be called with decisionsLock held.
 func (c *nadController) addDecision(key string, ids ...NADHandlerID) {
 	if len(ids) == 0 {
 		return
 	}
-	c.Lock()
 	set := c.handlerUpdateDecisions[key]
 	if set == nil {
 		set = sets.New[NADHandlerID]()
 		c.handlerUpdateDecisions[key] = set
 	}
 	set.Insert(ids...)
-	c.Unlock()
 }
 
 func (c *nadController) syncAll() (err error) {
@@ -351,11 +349,36 @@ func (c *nadController) sync(key string) error {
 	}
 
 	nad, err := c.nadLister.NetworkAttachmentDefinitions(namespace).Get(name)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return err
+	// nadNeedsUpdate is not called on delete event, hence handlerUpdateDecisions will not be updated on delete events.
+	// make sure to always propagate delete events to all handlers like level-driven controllers do
+	removed := false
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		removed = true
+	}
+	// load existing upgrade decisions for this key and empty the buffer.
+	// we do this to avoid holding the lock for the whole sync duration and let nadNeedsUpdate work in parallel
+	c.decisionsLock.Lock()
+	updateDecisions := c.handlerUpdateDecisions[key]
+	delete(c.handlerUpdateDecisions, key)
+	c.decisionsLock.Unlock()
+	if updateDecisions == nil && !removed {
+		// this can only happen if the previous sync has already processed all updates,
+		// but the key was still added to the workqueue, nothing to do
+		return nil
 	}
 
-	return c.syncNAD(key, nad)
+	var syncErr error
+	if c.nadNeedsNetworkControllerAddUpdate(removed, updateDecisions) {
+		if syncErr = c.syncNAD(key, nad); err != nil {
+			return err
+		}
+	}
+
+	c.executeHandlers(key, removed, updateDecisions)
+	return syncErr
 }
 
 func (c *nadController) syncNAD(key string, nad *nettypes.NetworkAttachmentDefinition) error {
@@ -444,7 +467,6 @@ func (c *nadController) syncNAD(key string, nad *nettypes.NetworkAttachmentDefin
 		} else {
 			c.networkController.EnsureNetwork(oldNetwork)
 		}
-		c.executeHandlers(key, oldNetwork, true)
 	}
 
 	if err := c.handleNetworkAnnotations(oldNetwork, ensureNetwork, nad); err != nil {
@@ -480,12 +502,7 @@ func (c *nadController) syncNAD(key string, nad *nettypes.NetworkAttachmentDefin
 			delete(c.primaryNADs, namespace)
 		}
 	}
-
-	// reconcile the network
-	if c.nadNeedsNetworkControllerAddUpdate(key) {
-		c.networkController.EnsureNetwork(ensureNetwork)
-	}
-	c.executeHandlers(key, ensureNetwork, false)
+	c.networkController.EnsureNetwork(ensureNetwork)
 	return nil
 }
 
@@ -495,20 +512,24 @@ func isOwnUpdate(manager string, managedFields []metav1.ManagedFieldsEntry) bool
 	return util.IsLastUpdatedByManager(manager, managedFields)
 }
 
-// nadNeedsNetworkControllerAddUpdate checks if this add/update should ensureNetwork happen based on networkControllerNeedsNADUpdate.
-// nadNeedsNetworkControllerAddUpdate must be called with nadController mutex locked
-func (c *nadController) nadNeedsNetworkControllerAddUpdate(nadName string) bool {
-	set, ok := c.handlerUpdateDecisions[nadName]
-	if !ok {
-		// If no decision was recorded (e.g., direct syncNAD calls in tests or initial sync),
-		// default to reconciling the network.
-		return true
-	}
-	return set.Has(NetworkControllerUpdateID)
+// nadNeedsNetworkControllerAddUpdate checks if this event should syncNAD based on updateDecisions.
+func (c *nadController) nadNeedsNetworkControllerAddUpdate(removed bool, updateDecisions sets.Set[NADHandlerID]) bool {
+	return removed || updateDecisions.Has(NetworkControllerUpdateID)
 }
 
 // networkControllerNeedsNADUpdate is a specific needsUpdate filter used for network controllers.
-func networkControllerNeedsNADUpdate(oldNAD, newNAD *nettypes.NetworkAttachmentDefinition) bool {
+func (c *nadController) networkControllerNeedsNADUpdate(oldNAD, newNAD *nettypes.NetworkAttachmentDefinition) bool {
+	if oldNAD == nil || newNAD == nil {
+		return true
+	}
+	// don't process resync or objects that are marked for deletion
+	if oldNAD.ResourceVersion == newNAD.ResourceVersion ||
+		!newNAD.GetDeletionTimestamp().IsZero() {
+		return false
+	}
+	if isOwnUpdate(c.name, newNAD.ManagedFields) {
+		return false
+	}
 	// also reconcile the network in case its route advertisements changed
 	return !reflect.DeepEqual(oldNAD.Spec, newNAD.Spec) ||
 		oldNAD.Annotations[types.OvnRouteAdvertisementsKey] != newNAD.Annotations[types.OvnRouteAdvertisementsKey] ||
@@ -517,42 +538,16 @@ func networkControllerNeedsNADUpdate(oldNAD, newNAD *nettypes.NetworkAttachmentD
 }
 
 func (c *nadController) nadNeedsUpdate(oldNAD, newNAD *nettypes.NetworkAttachmentDefinition) bool {
-	if oldNAD == nil && newNAD != nil {
-		key := fmt.Sprintf("%s/%s", newNAD.Namespace, newNAD.Name)
-		c.addDecision(key, NetworkControllerUpdateID)
-		return true
-	}
-
-	if oldNAD == nil || newNAD == nil {
-		return true
-	}
-
-	// don't process resync or objects that are marked for deletion
-	if oldNAD.ResourceVersion == newNAD.ResourceVersion ||
-		!newNAD.GetDeletionTimestamp().IsZero() {
-		return false
-	}
-
-	if isOwnUpdate(c.name, newNAD.ManagedFields) {
-		return false
-	}
-
 	key := fmt.Sprintf("%s/%s", newNAD.Namespace, newNAD.Name)
-
+	c.decisionsLock.Lock()
+	defer c.decisionsLock.Unlock()
 	decisionsAdded := 0
-	if networkControllerNeedsNADUpdate(oldNAD, newNAD) {
+	if c.networkControllerNeedsNADUpdate(oldNAD, newNAD) {
 		c.addDecision(key, NetworkControllerUpdateID)
 		decisionsAdded++
 	}
 
-	c.RLock()
-	handlerCount := len(c.handlers)
-	c.RUnlock()
-
-	if handlerCount == 0 {
-		return decisionsAdded > 0
-	}
-
+	c.handlersLock.RLock()
 	idsToAdd := sets.New[NADHandlerID]()
 	for id, h := range c.handlers {
 		if h.needsUpdate == nil || h.needsUpdate(oldNAD, newNAD) {
@@ -560,7 +555,7 @@ func (c *nadController) nadNeedsUpdate(oldNAD, newNAD *nettypes.NetworkAttachmen
 			decisionsAdded++
 		}
 	}
-
+	c.handlersLock.RUnlock()
 	c.addDecision(key, idsToAdd.UnsortedList()...)
 
 	return decisionsAdded > 0

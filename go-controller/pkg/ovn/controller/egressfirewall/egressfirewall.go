@@ -365,20 +365,15 @@ func (oc *EFController) Stop() {
 	controller.Stop(oc.nodeController, oc.controller)
 }
 
-func (oc *EFController) handleNetworkEvent(nadName string, info util.NetInfo, removed bool) {
-	if info != nil && !info.IsPrimaryNetwork() { // egressFirewall only supported for primary network
-		return
-	}
+func (oc *EFController) handleNetworkEvent(nadName string) {
+	// TODO try to find out if this event affects EF
+	// maybe compare current port group name with cached one and only reconcile if they are different
 	namespace, _, err := cache.SplitMetaNamespaceKey(nadName)
 	if err != nil {
 		klog.Errorf("%s: failed splitting key %s: %v", oc.name, nadName, err)
 		return
 	}
-	eventType := "add/update"
-	if removed {
-		eventType = "remove"
-	}
-	klog.V(4).Infof("NAD %s for egress firewall in namespace: %q. Will sync.", eventType, namespace)
+	klog.V(4).Infof("NAD event %s for egress firewall in namespace: %q. Will sync.", nadName, namespace)
 	oc.controller.Reconcile(fmt.Sprintf("%s/%s", namespace, egressFirewallName))
 }
 
