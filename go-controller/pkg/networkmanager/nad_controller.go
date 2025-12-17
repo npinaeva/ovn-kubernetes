@@ -46,6 +46,8 @@ type watchFactory interface {
 	NodeCoreInformer() coreinformers.NodeInformer
 }
 
+const NetworkControllerUpdateID NADHandlerID = 0
+
 // nadController handles namespaced scoped NAD events and
 // manages cluster scoped networks defined in those NADs. NADs are mostly
 // referenced from pods to give them access to the network. Different NADs can
@@ -221,26 +223,40 @@ func (c *nadController) executeHandlers(nadName string, info util.NetInfo, remov
 		}
 		return
 	}
-
 	// add/update handlers should be filtered
 	idSet, ok := c.handlerUpdateDecisions[nadName]
 	if ok {
 		for _, id := range idSet.UnsortedList() {
-			h, exists := c.handlers[id]
-			if !exists {
+			if id == NetworkControllerUpdateID {
 				continue
 			}
-			h.handler(nadName, info, removed)
+			if h, exists := c.handlers[id]; exists {
+				h.handler(nadName, info, removed)
+			}
 		}
 		// reset handlers after notifying all
 		delete(c.handlerUpdateDecisions, nadName)
 		return
 	}
-
 	// add/update with no filtering, send all
 	for _, h := range c.handlers {
 		h.handler(nadName, info, removed)
 	}
+}
+
+// addDecision adds handler IDs to the decision set for the given key.
+func (c *nadController) addDecision(key string, ids ...NADHandlerID) {
+	if len(ids) == 0 {
+		return
+	}
+	c.Lock()
+	set := c.handlerUpdateDecisions[key]
+	if set == nil {
+		set = sets.New[NADHandlerID]()
+		c.handlerUpdateDecisions[key] = set
+	}
+	set.Insert(ids...)
+	c.Unlock()
 }
 
 func (c *nadController) syncAll() (err error) {
@@ -253,6 +269,7 @@ func (c *nadController) syncAll() (err error) {
 		key, err := cache.MetaNamespaceKeyFunc(nad)
 		if err != nil {
 			klog.Errorf("%s: failed to sync %v: %v", c.name, nad, err)
+			return nil
 		}
 		err = c.syncNAD(key, nad)
 		if err != nil {
@@ -465,7 +482,9 @@ func (c *nadController) syncNAD(key string, nad *nettypes.NetworkAttachmentDefin
 	}
 
 	// reconcile the network
-	c.networkController.EnsureNetwork(ensureNetwork)
+	if c.nadNeedsNetworkControllerAddUpdate(key) {
+		c.networkController.EnsureNetwork(ensureNetwork)
+	}
 	c.executeHandlers(key, ensureNetwork, false)
 	return nil
 }
@@ -476,7 +495,34 @@ func isOwnUpdate(manager string, managedFields []metav1.ManagedFieldsEntry) bool
 	return util.IsLastUpdatedByManager(manager, managedFields)
 }
 
+// nadNeedsNetworkControllerAddUpdate checks if this add/update should ensureNetwork happen based on networkControllerNeedsNADUpdate.
+// nadNeedsNetworkControllerAddUpdate must be called with nadController mutex locked
+func (c *nadController) nadNeedsNetworkControllerAddUpdate(nadName string) bool {
+	set, ok := c.handlerUpdateDecisions[nadName]
+	if !ok {
+		// If no decision was recorded (e.g., direct syncNAD calls in tests or initial sync),
+		// default to reconciling the network.
+		return true
+	}
+	return set.Has(NetworkControllerUpdateID)
+}
+
+// networkControllerNeedsNADUpdate is a specific needsUpdate filter used for network controllers.
+func networkControllerNeedsNADUpdate(oldNAD, newNAD *nettypes.NetworkAttachmentDefinition) bool {
+	// also reconcile the network in case its route advertisements changed
+	return !reflect.DeepEqual(oldNAD.Spec, newNAD.Spec) ||
+		oldNAD.Annotations[types.OvnRouteAdvertisementsKey] != newNAD.Annotations[types.OvnRouteAdvertisementsKey] ||
+		oldNAD.Annotations[types.OvnNetworkIDAnnotation] != newNAD.Annotations[types.OvnNetworkIDAnnotation] ||
+		oldNAD.Annotations[types.OvnNetworkNameAnnotation] != newNAD.Annotations[types.OvnNetworkNameAnnotation]
+}
+
 func (c *nadController) nadNeedsUpdate(oldNAD, newNAD *nettypes.NetworkAttachmentDefinition) bool {
+	if oldNAD == nil && newNAD != nil {
+		key := fmt.Sprintf("%s/%s", newNAD.Namespace, newNAD.Name)
+		c.addDecision(key, NetworkControllerUpdateID)
+		return true
+	}
+
 	if oldNAD == nil || newNAD == nil {
 		return true
 	}
@@ -491,13 +537,12 @@ func (c *nadController) nadNeedsUpdate(oldNAD, newNAD *nettypes.NetworkAttachmen
 		return false
 	}
 
-	// also reconcile the network in case its route advertisements changed
-	interesting := !reflect.DeepEqual(oldNAD.Spec, newNAD.Spec) ||
-		oldNAD.Annotations[types.OvnRouteAdvertisementsKey] != newNAD.Annotations[types.OvnRouteAdvertisementsKey] ||
-		oldNAD.Annotations[types.OvnNetworkIDAnnotation] != newNAD.Annotations[types.OvnNetworkIDAnnotation] ||
-		oldNAD.Annotations[types.OvnNetworkNameAnnotation] != newNAD.Annotations[types.OvnNetworkNameAnnotation]
-	if !interesting {
-		return false
+	key := fmt.Sprintf("%s/%s", newNAD.Namespace, newNAD.Name)
+
+	decisionsAdded := 0
+	if networkControllerNeedsNADUpdate(oldNAD, newNAD) {
+		c.addDecision(key, NetworkControllerUpdateID)
+		decisionsAdded++
 	}
 
 	c.RLock()
@@ -505,26 +550,20 @@ func (c *nadController) nadNeedsUpdate(oldNAD, newNAD *nettypes.NetworkAttachmen
 	c.RUnlock()
 
 	if handlerCount == 0 {
-		return true
+		return decisionsAdded > 0
 	}
 
-	key := fmt.Sprintf("%s/%s", newNAD.Namespace, newNAD.Name)
-
-	c.Lock()
+	idsToAdd := sets.New[NADHandlerID]()
 	for id, h := range c.handlers {
 		if h.needsUpdate == nil || h.needsUpdate(oldNAD, newNAD) {
-			set := c.handlerUpdateDecisions[key]
-			if set == nil {
-				set = sets.New[NADHandlerID]()
-				c.handlerUpdateDecisions[key] = set
-			}
-			// we only add handlers here. Removal happens after we executeHandlers for add/update.
-			set.Insert(id)
+			idsToAdd.Insert(id)
+			decisionsAdded++
 		}
 	}
-	c.Unlock()
 
-	return true
+	c.addDecision(key, idsToAdd.UnsortedList()...)
+
+	return decisionsAdded > 0
 }
 
 func (c *nadController) GetActiveNetworkForNamespace(namespace string) (util.NetInfo, error) {

@@ -1127,10 +1127,10 @@ func TestRegisterNADHandlerWithNeedsUpdate(t *testing.T) {
 	})
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
-	// Different config should be interesting and store only the first handler
+	// Different config should be interesting and store the network controller + first handler
 	g.Expect(c.nadNeedsUpdate(makeNAD("old", "1"), makeNAD("new", "2"))).To(gomega.BeTrue())
 	key := "ns/nad"
-	g.Expect(c.handlerUpdateDecisions[key]).To(gomega.HaveLen(1))
+	g.Expect(c.handlerUpdateDecisions[key]).To(gomega.HaveLen(2))
 
 	// executeHandlers should only call the selected handler
 	c.executeHandlers(key, nil, false)
