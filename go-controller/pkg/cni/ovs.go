@@ -237,27 +237,30 @@ func doPodFlowsExist(mac string, ifAddrs []*net.IPNet, ofPort int) bool {
 // have a 1:1 relationship determined by pod UID. If we detect that the pod
 // has changed either UID or MAC terminate this sandbox request early instead
 // of waiting for OVN to set up flows that will never exist.
-func checkCancelSandbox(mac string, getter PodInfoGetter, namespace, name, nadKey, initialPodUID string) error {
+func (c *interfaceConfig) checkCancelSandbox() error {
+	ifInfo := c.ifInfo
+	pr := c.pr
+
 	// Not all node CNI modes may have access to kube api, those will pass nil as getter.
-	if getter == nil {
+	if c.clientset == nil {
 		return nil
 	}
-	pod, err := getter.getPod(namespace, name)
+	pod, err := c.clientset.getPod(pr.PodNamespace, pr.PodName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return fmt.Errorf("pod deleted")
 		}
-		klog.Warningf("[%s/%s] failed to get pod while waiting for OVS port binding: %v", namespace, name, err)
+		klog.Warningf("[%s/%s] failed to get pod while waiting for OVS port binding: %v", pr.PodNamespace, pr.PodName, err)
 		return nil
 	}
 
-	if string(pod.UID) != initialPodUID {
+	if string(pod.UID) != ifInfo.PodUID {
 		// Pod UID changed and this sandbox should be canceled
 		// so the new pod sandbox can run
 		return fmt.Errorf("canceled old pod sandbox")
 	}
 
-	ovnAnnot, err := util.UnmarshalPodAnnotation(pod.Annotations, nadKey)
+	ovnAnnot, err := util.UnmarshalPodAnnotation(pod.Annotations, ifInfo.NADKey)
 	if err != nil {
 		return fmt.Errorf("pod OVN annotations deleted or invalid")
 	}
@@ -265,16 +268,17 @@ func checkCancelSandbox(mac string, getter PodInfoGetter, namespace, name, nadKe
 	// Pod OVN annotation changed and this sandbox should
 	// be canceled so the new pod sandbox can run with the
 	// updated MAC/IP
-	if mac != ovnAnnot.MAC.String() {
+	if ifInfo.MAC.String() != ovnAnnot.MAC.String() {
 		return fmt.Errorf("pod OVN annotations changed")
 	}
 
 	return nil
 }
 
-func waitForPodInterface(ctx context.Context, ifInfo *PodInterfaceInfo,
-	ifaceName, ifaceID string, getter PodInfoGetter,
-	namespace, name, initialPodUID string) error {
+func (c *interfaceConfig) waitForPodInterface(ifaceName, ifaceID string) error {
+	ctx := c.pr.Ctx
+	ifInfo := c.ifInfo
+
 	var detail string
 	var ofPort int
 	var err error
@@ -327,7 +331,7 @@ func waitForPodInterface(ctx context.Context, ifInfo *PodInterfaceInfo,
 				}
 			}
 
-			if err := checkCancelSandbox(mac, getter, namespace, name, ifInfo.NADKey, initialPodUID); err != nil {
+			if err := c.checkCancelSandbox(); err != nil {
 				return fmt.Errorf("%v waiting for OVS port binding for %s %v", err, mac, ifAddrs)
 			}
 

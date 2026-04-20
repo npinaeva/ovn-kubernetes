@@ -173,7 +173,7 @@ func cniRequestToPodRequest(cr *Request) (*PodRequest, error) {
 	// STATUS requests do not carry pod-specific context. Return early after validating config.
 	if req.Command == CNIStatus {
 		// Match the Kubelet default CRI operation timeout of 2m.
-		req.ctx, req.cancel = context.WithTimeout(context.Background(), kubeletDefaultCRIOperationTimeout)
+		req.Ctx, req.cancel = context.WithTimeout(context.Background(), kubeletDefaultCRIOperationTimeout)
 		return req, nil
 	}
 
@@ -240,7 +240,7 @@ func cniRequestToPodRequest(cr *Request) (*PodRequest, error) {
 	}
 
 	// Match the Kubelet default CRI operation timeout of 2m.
-	req.ctx, req.cancel = context.WithTimeout(context.Background(), kubeletDefaultCRIOperationTimeout)
+	req.Ctx, req.cancel = context.WithTimeout(context.Background(), kubeletDefaultCRIOperationTimeout)
 	return req, nil
 }
 

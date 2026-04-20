@@ -167,7 +167,7 @@ type PodRequest struct {
 	// Timestamp when the request was started
 	timestamp time.Time
 	// ctx is a context tracking this request's lifetime
-	ctx context.Context
+	Ctx context.Context
 	// cancel should be called to cancel this request
 	cancel context.CancelFunc
 	// if CNIConf.DeviceID is present, then captures if the VF is of type VFIO or not
@@ -189,8 +189,13 @@ type PodRequest struct {
 	deviceInfo nadapi.DeviceInfo
 }
 
+type interfaceConfig struct {
+	pr        *PodRequest
+	ifInfo    *PodInterfaceInfo
+	clientset PodInfoGetter
+}
+
 type podRequestFunc func(request *PodRequest, clientset *ClientSet, kubeAuth *KubeAPIAuth, networkManager networkmanager.Interface, ovsClient client.Client) ([]byte, error)
-type getCNIResultFunc func(request *PodRequest, getter PodInfoGetter, podInterfaceInfo *PodInterfaceInfo) (*current.Result, error)
 
 type PodInfoGetter interface {
 	getPod(namespace, name string) (*corev1.Pod, error)

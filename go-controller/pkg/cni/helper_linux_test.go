@@ -503,7 +503,12 @@ func TestSetupInterface(t *testing.T) {
 			ovntest.ProcessMockFnList(&mockNetLinkOps.Mock, tc.netLinkOpsMockHelper)
 			ovntest.ProcessMockFnList(&mockNS.Mock, tc.nsMockHelper)
 
-			hostIface, contIface, err := setupInterface(tc.inpNetNS, tc.inpContID, tc.inpIfaceName, tc.inpPodIfaceInfo)
+			podRequest := &PodRequest{
+				SandboxID: tc.inpContID,
+				IfName:    tc.inpIfaceName,
+			}
+			ifConfig := NewInterfaceConfigForAdd(podRequest, nil, tc.inpPodIfaceInfo).(*interfaceConfig)
+			hostIface, contIface, err := ifConfig.setupInterface(tc.inpNetNS)
 			t.Log(hostIface, contIface, err)
 			if tc.errExp {
 				require.Error(t, err)
@@ -1126,7 +1131,16 @@ func TestSetupSriovInterface(t *testing.T) {
 			runner = tc.runnerInstance
 
 			netNsDoError = nil
-			hostIface, contIface, err := setupSriovInterface(tc.inpNetNS, tc.inpContID, tc.inpIfaceName, tc.inpPodIfaceInfo, tc.inpPCIAddrs, false)
+			podRequest := &PodRequest{
+				SandboxID: tc.inpContID,
+				IfName:    tc.inpIfaceName,
+				CNIConf: &types.NetConf{
+					DeviceID: tc.inpPCIAddrs,
+				},
+				IsVFIO: false,
+			}
+			ifConfig := NewInterfaceConfigForAdd(podRequest, nil, tc.inpPodIfaceInfo).(*interfaceConfig)
+			hostIface, contIface, err := ifConfig.setupSriovInterface(tc.inpNetNS)
 			t.Log(hostIface, contIface, err)
 			if err == nil {
 				err = netNsDoError
@@ -1550,8 +1564,18 @@ func TestConfigureOVS(t *testing.T) {
 			podLister.On("Pods", mock.AnythingOfType("string")).Return(&podNamespaceLister)
 			fakeClient := fake.NewSimpleClientset(&corev1.PodList{Items: []corev1.Pod{pod}})
 			clientset := NewClientSet(fakeClient, &podLister)
-			err = ConfigureOVS(ctx, tc.podNs, tc.podName, "", tc.vfRep,
-				tc.ifInfo, sandboxID, vfPciAddress, clientset)
+			podRequest := &PodRequest{
+				PodNamespace: tc.podNs,
+				PodName:      tc.podName,
+				SandboxID:    sandboxID,
+				IfName:       "",
+				CNIConf: &types.NetConf{
+					DeviceID: vfPciAddress,
+				},
+				Ctx: ctx,
+			}
+			ifConfig := NewInterfaceConfigForAdd(podRequest, clientset, tc.ifInfo)
+			err = ifConfig.ConfigureOVS(tc.vfRep)
 			if tc.errMatch != nil {
 				assert.Contains(t, err.Error(), tc.errMatch.Error())
 			} else {
@@ -1685,8 +1709,18 @@ func TestConfigureOVS_getPfEncapIpWithError(t *testing.T) {
 
 			var podLister v1mocks.PodLister
 			podLister.On("Pods", mock.AnythingOfType("string")).Return(&podNamespaceLister)
-			err = ConfigureOVS(ctx, tc.podNs, tc.podName, "", tc.vfRep,
-				tc.ifInfo, sandboxID, vfPciAddress, nil)
+			podRequest := &PodRequest{
+				PodNamespace: tc.podNs,
+				PodName:      tc.podName,
+				SandboxID:    sandboxID,
+				IfName:       "",
+				CNIConf: &types.NetConf{
+					DeviceID: vfPciAddress,
+				},
+				Ctx: ctx,
+			}
+			ifConfig := NewInterfaceConfigForAdd(podRequest, nil, tc.ifInfo)
+			err = ifConfig.ConfigureOVS(tc.vfRep)
 			if tc.errMatch != nil {
 				assert.Contains(t, err.Error(), tc.errMatch.Error())
 			} else {

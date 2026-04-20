@@ -15,6 +15,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni"
+	cnitypes "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
@@ -277,7 +278,18 @@ func (bnnc *BaseNodeNetworkController) addRepPort(pod *corev1.Pod, dpuCD *util.D
 	}
 
 	klog.Infof("Adding VF representor %s for %s", vfRepName, podDesc)
-	err = cni.ConfigureOVS(context.TODO(), pod.Namespace, pod.Name, "", vfRepName, ifInfo, dpuCD.SandboxId, vfPciAddress, getter)
+	podRequest := &cni.PodRequest{
+		PodNamespace: pod.Namespace,
+		PodName:      pod.Name,
+		SandboxID:    dpuCD.SandboxId,
+		IfName:       "",
+		CNIConf: &cnitypes.NetConf{
+			DeviceID: vfPciAddress,
+		},
+		Ctx: context.TODO(),
+	}
+	ifConfig := cni.NewInterfaceConfigForAdd(podRequest, getter, ifInfo)
+	err = ifConfig.ConfigureOVS(vfRepName)
 	if err != nil {
 		// Note(adrianc): we are lenient with cleanup in this method as pod is going to be retried anyway.
 		_ = bnnc.delRepPort(pod, dpuCD, vfRepName, nadKey)

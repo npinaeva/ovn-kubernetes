@@ -297,7 +297,10 @@ func setupNetwork(link netlink.Link, ifInfo *PodInterfaceInfo) error {
 	return nil
 }
 
-func setupInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInterfaceInfo) (*current.Interface, *current.Interface, error) {
+func (c *interfaceConfig) setupInterface(netns ns.NetNS) (*current.Interface, *current.Interface, error) {
+	containerID := c.pr.SandboxID
+	ifInfo := c.ifInfo
+
 	hostIface := &current.Interface{}
 	contIface := &current.Interface{}
 	ifnameSuffix := ""
@@ -313,7 +316,7 @@ func setupInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInter
 			hostIface.Name = ""
 		}
 		contIface.Mac = ifInfo.MAC.String()
-		hostVeth, containerVeth, err := ip.SetupVethWithName(ifName, hostIface.Name, ifInfo.MTU, contIface.Mac, hostNS)
+		hostVeth, containerVeth, err := ip.SetupVethWithName(c.pr.IfName, hostIface.Name, ifInfo.MTU, contIface.Mac, hostNS)
 		if err != nil {
 			return err
 		}
@@ -347,7 +350,7 @@ func setupInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInter
 
 		// If we have the ipv6 gateway LLA then this is a primary layer2 UDN
 		if len(ifInfo.GatewayIPv6LLA) > 0 {
-			if err = setupIngressFilter(ifName, ifInfo.GatewayIPv6LLA.String()); err != nil {
+			if err = setupIngressFilter(c.pr.IfName, ifInfo.GatewayIPv6LLA.String()); err != nil {
 				return err
 			}
 		}
@@ -384,30 +387,34 @@ func generateIfName(containerID string) string {
 }
 
 // Setup sriov interface in the pod
-func setupSriovInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInterfaceInfo, deviceID string, isVFIO bool) (*current.Interface, *current.Interface, error) {
+func (c *interfaceConfig) setupSriovInterface(netns ns.NetNS) (*current.Interface, *current.Interface, error) {
+	pr := c.pr
+	ifInfo := c.ifInfo
+	deviceID := pr.CNIConf.DeviceID
+
 	hostIface := &current.Interface{}
 	contIface := &current.Interface{}
 	netdevice := ifInfo.NetdevName
 
 	// 0. init contIface for VFIO
-	if isVFIO {
+	if pr.IsVFIO {
 		if util.IsAuxDeviceName(deviceID) {
 			return nil, nil, fmt.Errorf("VFIO not supported for device %s", deviceID)
 		}
 		// if the SR-IOV device is bound to VFIO, then there is nothing
 		// to do as it will be passed to the KVM VM directly
-		contIface.Name = ifName
+		contIface.Name = pr.IfName
 		contIface.Mac = ifInfo.MAC.String()
 		contIface.Sandbox = netns.Path()
 	} else {
 		// 1. Move netdevice to Container namespace
 		if len(netdevice) != 0 {
-			newNetdevName, err := safeMoveIfToNetns(netdevice, netns, containerID)
+			newNetdevName, err := safeMoveIfToNetns(netdevice, netns, pr.SandboxID)
 			if err != nil {
 				return nil, nil, err
 			}
 			err = netns.Do(func(_ ns.NetNS) error {
-				contIface.Name = ifName
+				contIface.Name = pr.IfName
 				err = renameLink(newNetdevName, contIface.Name)
 				if err != nil {
 					return err
@@ -452,7 +459,7 @@ func setupSriovInterface(netns ns.NetNS, containerID, ifName string, ifInfo *Pod
 			return nil, nil, err
 		}
 
-		if isVFIO {
+		if pr.IsVFIO {
 			// 3. it's not possible to set mac address within container netns for VFIO case, hence set it through VF representor
 			if err := util.SetVFHardwreAddress(deviceID, ifInfo.MAC); err != nil {
 				return nil, nil, err
@@ -510,14 +517,15 @@ func getPfEncapIP(deviceID string) (string, error) {
 }
 
 // ConfigureOVS performs OVS configurations in order to set up Pod networking
-func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceName string,
-	ifInfo *PodInterfaceInfo, sandboxID, deviceID string, getter PodInfoGetter) error {
+func (c *interfaceConfig) ConfigureOVS(hostIfaceName string) error {
+	pr := c.pr
+	ifInfo := c.ifInfo
+	deviceID := pr.CNIConf.DeviceID
 
-	ifaceID := util.GetIfaceId(namespace, podName)
+	ifaceID := util.GetIfaceId(pr.PodNamespace, pr.PodName)
 	if ifInfo.NetName != types.DefaultNetworkName {
-		ifaceID = util.GetUDNIfaceId(namespace, podName, ifInfo.NADKey)
+		ifaceID = util.GetUDNIfaceId(pr.PodNamespace, pr.PodName, ifInfo.NADKey)
 	}
-	initialPodUID := ifInfo.PodUID
 	ipStrs := make([]string, len(ifInfo.IPs))
 	for i, ip := range ifInfo.IPs {
 		ipStrs[i] = ip.String()
@@ -529,7 +537,7 @@ func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceN
 	}
 
 	klog.Infof("ConfigureOVS: namespace: %s, podName: %s, hostIfaceName: %s, network: %s, NAD %s, SandboxID: %q, PCI device ID: %s, UID: %q, MAC: %s, IPs: %v",
-		namespace, podName, hostIfaceName, ifInfo.NetName, ifInfo.NADKey, sandboxID, deviceID, initialPodUID, ifInfo.MAC, ipStrs)
+		pr.PodNamespace, pr.PodName, hostIfaceName, ifInfo.NetName, ifInfo.NADKey, pr.SandboxID, deviceID, ifInfo.PodUID, ifInfo.MAC, ipStrs)
 
 	// Find and remove any existing OVS port with this iface-id. Pods can
 	// have multiple sandboxes if some are waiting for garbage collection,
@@ -572,13 +580,13 @@ func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceN
 		"--", "set", "interface", hostIfaceName,
 		fmt.Sprintf("external_ids:attached_mac=%s", ifInfo.MAC),
 		fmt.Sprintf("external_ids:iface-id=%s", ifaceID),
-		fmt.Sprintf("external_ids:iface-id-ver=%s", initialPodUID),
-		fmt.Sprintf("external_ids:sandbox=%s", sandboxID),
+		fmt.Sprintf("external_ids:iface-id-ver=%s", ifInfo.PodUID),
+		fmt.Sprintf("external_ids:sandbox=%s", pr.SandboxID),
 	}
 
 	// pod interface name, used to identify CNI request with the same NAD
-	if podIfName != "" {
-		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:pod-if-name=%s", podIfName))
+	if pr.IfName != "" {
+		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:pod-if-name=%s", pr.IfName))
 	}
 
 	// In case of multi-vtep, host has multipe NICs and each NIC has a VTEP interface, the mapping
@@ -635,7 +643,7 @@ func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceN
 		return fmt.Errorf("failure in plugging pod interface: %v\n  %q", err, out)
 	}
 
-	if err := clearPodBandwidth(sandboxID); err != nil {
+	if err := clearPodBandwidth(pr.SandboxID); err != nil {
 		return err
 	}
 
@@ -664,32 +672,50 @@ func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceN
 			return fmt.Errorf("failed to set host veth txqlen: %v", err)
 		}
 
-		if err := setPodBandwidth(sandboxID, hostIfaceName, ifInfo.Ingress, ifInfo.Egress); err != nil {
+		if err := setPodBandwidth(pr.SandboxID, hostIfaceName, ifInfo.Ingress, ifInfo.Egress); err != nil {
 			return err
 		}
 	}
 
-	if err := waitForPodInterface(ctx, ifInfo, hostIfaceName, ifaceID, getter,
-		namespace, podName, initialPodUID); err != nil {
+	if err := c.waitForPodInterface(hostIfaceName, ifaceID); err != nil {
 		// Ensure the error shows up in node logs, rather than just
 		// being reported back to the runtime.
-		klog.Warningf("[%s/%s %s] pod uid %s: %v", namespace, podName, sandboxID, initialPodUID, err)
+		klog.Warningf("[%s/%s %s] pod uid %s: %v", pr.PodNamespace, pr.PodName, pr.SandboxID, ifInfo.PodUID, err)
 		return err
 	}
 	return nil
 }
 
-type PodRequestInterfaceOps interface {
-	ConfigureInterface(pr *PodRequest, getter PodInfoGetter, ifInfo *PodInterfaceInfo) ([]*current.Interface, error)
-	UnconfigureInterface(pr *PodRequest, ifInfo *PodInterfaceInfo) error
+type InterfaceConfigOps interface {
+	ConfigureInterface() ([]*current.Interface, error)
+	UnconfigureInterface() error
+	ConfigureOVS(hostIfaceName string) error
 }
 
-type defaultPodRequestInterfaceOps struct{}
+// this is only here to allow UT mocks
+var NewInterfaceConfig = newInterfaceConfig
 
-var podRequestInterfaceOps PodRequestInterfaceOps = &defaultPodRequestInterfaceOps{}
+func NewInterfaceConfigForAdd(pr *PodRequest, clientset PodInfoGetter, ifInfo *PodInterfaceInfo) InterfaceConfigOps {
+	return NewInterfaceConfig(pr, clientset, ifInfo)
+}
+
+func NewInterfaceConfigForDel(pr *PodRequest, ifInfo *PodInterfaceInfo) InterfaceConfigOps {
+	return NewInterfaceConfig(pr, nil, ifInfo)
+}
+
+func newInterfaceConfig(pr *PodRequest, clientset PodInfoGetter, ifInfo *PodInterfaceInfo) InterfaceConfigOps {
+	return &interfaceConfig{
+		pr:        pr,
+		clientset: clientset,
+		ifInfo:    ifInfo,
+	}
+}
 
 // ConfigureInterface sets up the container interface
-func (*defaultPodRequestInterfaceOps) ConfigureInterface(pr *PodRequest, getter PodInfoGetter, ifInfo *PodInterfaceInfo) ([]*current.Interface, error) {
+func (c *interfaceConfig) ConfigureInterface() ([]*current.Interface, error) {
+	pr := c.pr
+	ifInfo := c.ifInfo
+
 	netns, err := ns.GetNS(pr.Netns)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open netns %q: %v", pr.Netns, err)
@@ -701,7 +727,7 @@ func (*defaultPodRequestInterfaceOps) ConfigureInterface(pr *PodRequest, getter 
 	klog.V(5).Infof("CNI Conf %v", pr.CNIConf)
 	if pr.CNIConf.DeviceID != "" {
 		// SR-IOV Case
-		hostIface, contIface, err = setupSriovInterface(netns, pr.SandboxID, pr.IfName, ifInfo, pr.CNIConf.DeviceID, pr.IsVFIO)
+		hostIface, contIface, err = c.setupSriovInterface(netns)
 	} else {
 		if ifInfo.IsDPUHostMode {
 			return nil, fmt.Errorf("unexpected configuration, pod request on dpu host. " +
@@ -709,14 +735,14 @@ func (*defaultPodRequestInterfaceOps) ConfigureInterface(pr *PodRequest, getter 
 		}
 
 		// General case
-		hostIface, contIface, err = setupInterface(netns, pr.SandboxID, pr.IfName, ifInfo)
+		hostIface, contIface, err = c.setupInterface(netns)
 	}
 	if err != nil {
 		return nil, err
 	}
 
 	if !ifInfo.IsDPUHostMode {
-		err = ConfigureOVS(pr.ctx, pr.PodNamespace, pr.PodName, pr.IfName, hostIface.Name, ifInfo, pr.SandboxID, pr.CNIConf.DeviceID, getter)
+		err = c.ConfigureOVS(hostIface.Name)
 		if err != nil {
 			pr.deletePort(hostIface.Name, pr.PodNamespace, pr.PodName)
 			return nil, err
@@ -762,7 +788,10 @@ func (*defaultPodRequestInterfaceOps) ConfigureInterface(pr *PodRequest, getter 
 	return []*current.Interface{hostIface, contIface}, nil
 }
 
-func (*defaultPodRequestInterfaceOps) UnconfigureInterface(pr *PodRequest, ifInfo *PodInterfaceInfo) error {
+func (c *interfaceConfig) UnconfigureInterface() error {
+	pr := c.pr
+	ifInfo := c.ifInfo
+
 	podDesc := fmt.Sprintf("for pod %s/%s NAD %s", pr.PodNamespace, pr.PodName, pr.nadName)
 	klog.V(5).Infof("Tear down interface (%+v) %s", *pr, podDesc)
 	if ifInfo.IsDPUHostMode {

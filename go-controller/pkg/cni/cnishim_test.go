@@ -93,8 +93,8 @@ func TestCmdAdd_UnprivilegedMode(t *testing.T) {
 		config.OVNKubernetesFeature.EnableMultiNetwork = true
 		config.OVNKubernetesFeature.EnableNetworkSegmentation = true
 
-		podRequestInterfaceOps = &podRequestInterfaceOpsStub{}
-		defer func() { podRequestInterfaceOps = &defaultPodRequestInterfaceOps{} }()
+		SetTestInterfaceConfig()
+		defer UnsetTestInterfaceConfig()
 		pr := PodRequest{
 			PodNamespace: "foo-ns",
 			PodName:      "bar-pod",
@@ -250,9 +250,15 @@ func TestCmdDel_UnprivilegedMode(t *testing.T) {
 		config.OVNKubernetesFeature.EnableMultiNetwork = true
 		config.OVNKubernetesFeature.EnableNetworkSegmentation = true
 
-		stub := &podRequestInterfaceOpsStub{}
-		podRequestInterfaceOps = stub
-		defer func() { podRequestInterfaceOps = &defaultPodRequestInterfaceOps{} }()
+		var stub *interfaceConfigStub
+		NewInterfaceConfig = func(pr *PodRequest, _ PodInfoGetter, ifInfo *PodInterfaceInfo) InterfaceConfigOps {
+			stub = &interfaceConfigStub{
+				pii: ifInfo,
+				pr:  pr,
+			}
+			return stub
+		}
+		defer UnsetTestInterfaceConfig()
 
 		resp := &Response{
 			Result: nil,

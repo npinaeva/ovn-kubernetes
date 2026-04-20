@@ -117,10 +117,6 @@ func (pr *PodRequest) checkOrUpdatePodUID(pod *corev1.Pod) error {
 	return nil
 }
 
-func (pr *PodRequest) cmdAdd(kubeAuth *KubeAPIAuth, clientset *ClientSet, networkManager networkmanager.Interface, ovsClient client.Client) (*Response, error) {
-	return pr.cmdAddWithGetCNIResultFunc(kubeAuth, clientset, getCNIResult, networkManager, ovsClient)
-}
-
 // primaryDPUReady makes sure previous annotation condition is ready, then if primary UDN interface is needed and it is
 // in the DPU-HOST/DPU setup, checks if DPU connection annotations for primary UDN interface are ready.
 func (pr *PodRequest) primaryDPUReady(primaryUDN *udn.UserDefinedPrimaryNetwork, k kube.Interface, podLister corev1listers.PodLister, annotCondFn podAnnotWaitCond) podAnnotWaitCond {
@@ -147,10 +143,9 @@ func (pr *PodRequest) primaryDPUReady(primaryUDN *udn.UserDefinedPrimaryNetwork,
 	}
 }
 
-func (pr *PodRequest) cmdAddWithGetCNIResultFunc(
+func (pr *PodRequest) cmdAdd(
 	kubeAuth *KubeAPIAuth,
 	clientset *ClientSet,
-	getCNIResultFn getCNIResultFunc,
 	networkManager networkmanager.Interface,
 	ovsClient client.Client,
 ) (*Response, error) {
@@ -162,7 +157,7 @@ func (pr *PodRequest) cmdAddWithGetCNIResultFunc(
 
 	kubecli := &kube.Kube{KClient: clientset.kclient}
 
-	pod, _, _, err := GetPodWithAnnotations(pr.ctx, clientset, namespace, podName, "",
+	pod, _, _, err := GetPodWithAnnotations(pr.Ctx, clientset, namespace, podName, "",
 		func(*corev1.Pod, string) (*util.PodAnnotation, bool, error) {
 			return nil, true, nil
 		},
@@ -219,7 +214,7 @@ func (pr *PodRequest) cmdAddWithGetCNIResultFunc(
 			annotCondFn = isDPUReady(annotCondFn, pr.nadKey)
 		}
 	}
-	pod, annotations, podNADAnnotation, err := GetPodWithAnnotations(pr.ctx, clientset, namespace, podName, pr.nadKey, annotCondFn)
+	pod, annotations, podNADAnnotation, err := GetPodWithAnnotations(pr.Ctx, clientset, namespace, podName, pr.nadKey, annotCondFn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod annotation: %v", err)
 	}
@@ -264,12 +259,12 @@ func (pr *PodRequest) cmdAddWithGetCNIResultFunc(
 			}
 		}
 
-		response.Result, err = getCNIResultFn(pr, clientset, podInterfaceInfo)
+		response.Result, err = getCNIResult(pr, clientset, podInterfaceInfo)
 		if err != nil {
 			return nil, err
 		}
 		if primaryUDNPodRequest != nil {
-			err = primaryUDNCmdAddGetCNIResultFunc(response.Result, getCNIResultFn, primaryUDNPodRequest, clientset, primaryUDNPodInfo)
+			err = primaryUDNCmdAddGetCNIResultFunc(response.Result, primaryUDNPodRequest, clientset, primaryUDNPodInfo)
 			if err != nil {
 				return nil, err
 			}
@@ -285,9 +280,9 @@ func (pr *PodRequest) cmdAddWithGetCNIResultFunc(
 	return response, nil
 }
 
-func primaryUDNCmdAddGetCNIResultFunc(result *current.Result, getCNIResultFn getCNIResultFunc, primaryUDNPodRequest *PodRequest,
+func primaryUDNCmdAddGetCNIResultFunc(result *current.Result, primaryUDNPodRequest *PodRequest,
 	clientset PodInfoGetter, primaryUDNPodInfo *PodInterfaceInfo) error {
-	primaryUDNResult, err := getCNIResultFn(primaryUDNPodRequest, clientset, primaryUDNPodInfo)
+	primaryUDNResult, err := getCNIResult(primaryUDNPodRequest, clientset, primaryUDNPodInfo)
 	if err != nil {
 		return err
 	}
@@ -419,7 +414,8 @@ func (pr *PodRequest) cmdDel(clientset *ClientSet) (*Response, error) {
 		NetdevName:    netdevName,
 	}
 	if !config.UnprivilegedMode {
-		err := podRequestInterfaceOps.UnconfigureInterface(pr, podInterfaceInfo)
+		ifConfig := NewInterfaceConfigForDel(pr, podInterfaceInfo)
+		err := ifConfig.UnconfigureInterface()
 		if err != nil {
 			return nil, err
 		}
@@ -494,8 +490,9 @@ func HandlePodRequest(
 // PodInfoGetter is used to check if sandbox is still valid for the current
 // instance of the pod in the apiserver, see checkCancelSandbox for more info.
 // If kube api is not available from the CNI, pass nil to skip this check.
-func getCNIResult(pr *PodRequest, getter PodInfoGetter, podInterfaceInfo *PodInterfaceInfo) (*current.Result, error) {
-	interfacesArray, err := podRequestInterfaceOps.ConfigureInterface(pr, getter, podInterfaceInfo)
+func getCNIResult(pr *PodRequest, clientset PodInfoGetter, podInterfaceInfo *PodInterfaceInfo) (*current.Result, error) {
+	ifConfig := NewInterfaceConfigForAdd(pr, clientset, podInterfaceInfo)
+	interfacesArray, err := ifConfig.ConfigureInterface()
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure pod interface: %v", err)
 	}
@@ -564,7 +561,7 @@ func (pr *PodRequest) buildPrimaryUDNPodRequest(
 		deviceInfo: *deviceInfo,
 	}
 
-	req.ctx, req.cancel = context.WithCancel(pr.ctx)
+	req.Ctx, req.cancel = context.WithCancel(pr.Ctx)
 	return req
 }
 

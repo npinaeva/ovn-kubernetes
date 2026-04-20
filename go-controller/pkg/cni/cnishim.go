@@ -274,9 +274,9 @@ func (p *Plugin) CmdAdd(args *skel.CmdArgs) error {
 		}
 		if response.PrimaryUDNPodInfo != nil {
 			primaryUDNPodRequest := response.PrimaryUDNPodReq
-			primaryUDNPodRequest.ctx, primaryUDNPodRequest.cancel = context.WithCancel(pr.ctx)
+			primaryUDNPodRequest.Ctx, primaryUDNPodRequest.cancel = context.WithCancel(pr.Ctx)
 			defer primaryUDNPodRequest.cancel()
-			err = primaryUDNCmdAddGetCNIResultFunc(result, getCNIResult, primaryUDNPodRequest, clientset, response.PrimaryUDNPodInfo)
+			err = primaryUDNCmdAddGetCNIResultFunc(result, primaryUDNPodRequest, clientset, response.PrimaryUDNPodInfo)
 			if err != nil {
 				klog.Error(err.Error())
 				return err
@@ -340,8 +340,8 @@ func (p *Plugin) CmdDel(args *skel.CmdArgs) error {
 				return err
 			}
 		}
-
-		err = podRequestInterfaceOps.UnconfigureInterface(pr, response.PodIFInfo)
+		ifConfig := NewInterfaceConfigForDel(pr, response.PodIFInfo)
+		err = ifConfig.UnconfigureInterface()
 	}
 	return err
 }
