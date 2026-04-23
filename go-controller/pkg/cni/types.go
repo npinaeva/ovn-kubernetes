@@ -130,7 +130,7 @@ func (response *Response) MarshalForLogging() ([]byte, error) {
 		return nil, nil
 	}
 
-	// Only one of Result and PodIFInfo is ever set by cmdAdd/cmdDel
+	// Only one of Result and PodIFInfo is ever set by cmdAdd/CmdDel
 	if response.Result != nil {
 		noAuth = response.Result
 	} else {
@@ -163,30 +163,31 @@ type PodRequest struct {
 	// Interface name to be configured
 	IfName string
 	// CNI conf obtained from stdin conf
-	CNIConf *types.NetConf
+	CNIConf  *types.NetConf
+	VethName string
 	// Timestamp when the request was started
 	timestamp time.Time
-	// ctx is a context tracking this request's lifetime
+	// Ctx is a context tracking this request's lifetime
 	Ctx context.Context
-	// cancel should be called to cancel this request
-	cancel context.CancelFunc
+	// Cancel should be called to Cancel this request
+	Cancel context.CancelFunc
 	// if CNIConf.DeviceID is present, then captures if the VF is of type VFIO or not
 	IsVFIO bool
 
 	// network name, for default network, this will be types.DefaultNetworkName
-	netName string
+	NetName string
 
 	// for ovs interfaces plumbed for UDNs, their iface-id's prefix is derived from the specific nadName;
 	// also, need to find the pod annotation, dpu pod connection/status annotations of the given NAD ("default"
 	// for default network).
-	nadName string
-	// for default/primary UDN network, nadKey is the same as nadName, for secondary UDN, if a Pod requests
-	// network attachment of multiple same secondary UDN, nadKey would be nadName for its first interface CNI request,
+	NadName string
+	// for default/primary UDN network, NadKey is the same as nadName, for secondary UDN, if a Pod requests
+	// network attachment of multiple same secondary UDN, NadKey would be nadName for its first interface CNI request,
 	// and <nadName>/<index> (index starting from 1) for the subsequent interface CNI request
-	nadKey string
+	NadKey string
 
 	// the DeviceInfo struct
-	deviceInfo nadapi.DeviceInfo
+	DeviceInfo nadapi.DeviceInfo
 }
 
 type interfaceConfig struct {
@@ -208,10 +209,11 @@ type ClientSet struct {
 	nadLister nadv1Listers.NetworkAttachmentDefinitionLister
 }
 
-func NewClientSet(kclient kubernetes.Interface, podLister corev1listers.PodLister) *ClientSet {
+func NewClientSet(kclient kubernetes.Interface, podLister corev1listers.PodLister, nadLister nadv1Listers.NetworkAttachmentDefinitionLister) *ClientSet {
 	return &ClientSet{
 		kclient:   kclient,
 		podLister: podLister,
+		nadLister: nadLister,
 	}
 }
 

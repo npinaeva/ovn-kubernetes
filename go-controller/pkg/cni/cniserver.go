@@ -168,12 +168,12 @@ func cniRequestToPodRequest(cr *Request) (*PodRequest, error) {
 		return nil, fmt.Errorf("broken stdin args")
 	}
 	req.CNIConf = conf
-	req.deviceInfo = cr.DeviceInfo
+	req.DeviceInfo = cr.DeviceInfo
 
 	// STATUS requests do not carry pod-specific context. Return early after validating config.
 	if req.Command == CNIStatus {
 		// Match the Kubelet default CRI operation timeout of 2m.
-		req.Ctx, req.cancel = context.WithTimeout(context.Background(), kubeletDefaultCRIOperationTimeout)
+		req.Ctx, req.Cancel = context.WithTimeout(context.Background(), kubeletDefaultCRIOperationTimeout)
 		return req, nil
 	}
 
@@ -217,11 +217,11 @@ func cniRequestToPodRequest(cr *Request) (*PodRequest, error) {
 
 	// the first network to the Pod is always named as `default`,
 	// capture the effective NAD Name here
-	req.netName = conf.Name
-	if req.netName == types.DefaultNetworkName {
-		req.nadName = types.DefaultNetworkName
+	req.NetName = conf.Name
+	if req.NetName == types.DefaultNetworkName {
+		req.NadName = types.DefaultNetworkName
 	} else {
-		req.nadName = conf.NADName
+		req.NadName = conf.NADName
 	}
 
 	if conf.DeviceID != "" {
@@ -240,7 +240,7 @@ func cniRequestToPodRequest(cr *Request) (*PodRequest, error) {
 	}
 
 	// Match the Kubelet default CRI operation timeout of 2m.
-	req.Ctx, req.cancel = context.WithTimeout(context.Background(), kubeletDefaultCRIOperationTimeout)
+	req.Ctx, req.Cancel = context.WithTimeout(context.Background(), kubeletDefaultCRIOperationTimeout)
 	return req, nil
 }
 
@@ -256,7 +256,7 @@ func (s *Server) handleCNIRequest(r *http.Request) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer req.cancel()
+	defer req.Cancel()
 
 	if err := s.checkDPUHealth(req); err != nil {
 		return nil, err

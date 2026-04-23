@@ -254,7 +254,7 @@ func (p *Plugin) CmdAdd(args *skel.CmdArgs) error {
 			klog.Error(err.Error())
 			return err
 		}
-		defer pr.cancel()
+		defer pr.Cancel()
 
 		if !response.PodIFInfo.IsDPUHostMode {
 			// Initialize OVS exec runner; find OVS binaries that the CNI code uses.
@@ -274,8 +274,8 @@ func (p *Plugin) CmdAdd(args *skel.CmdArgs) error {
 		}
 		if response.PrimaryUDNPodInfo != nil {
 			primaryUDNPodRequest := response.PrimaryUDNPodReq
-			primaryUDNPodRequest.Ctx, primaryUDNPodRequest.cancel = context.WithCancel(pr.Ctx)
-			defer primaryUDNPodRequest.cancel()
+			primaryUDNPodRequest.Ctx, primaryUDNPodRequest.Cancel = context.WithCancel(pr.Ctx)
+			defer primaryUDNPodRequest.Cancel()
 			err = primaryUDNCmdAddGetCNIResultFunc(result, primaryUDNPodRequest, clientset, response.PrimaryUDNPodInfo)
 			if err != nil {
 				klog.Error(err.Error())
@@ -330,7 +330,7 @@ func (p *Plugin) CmdDel(args *skel.CmdArgs) error {
 			err = fmt.Errorf("failed to create pod request: %v", err)
 			return err
 		}
-		defer pr.cancel()
+		defer pr.Cancel()
 
 		if !response.PodIFInfo.IsDPUHostMode {
 			// Initialize OVS exec runner; find OVS binaries that the CNI code uses.

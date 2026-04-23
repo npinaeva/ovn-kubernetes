@@ -102,7 +102,7 @@ func dpuConnectionDetailChanged(oldDPUCD, newDPUCD *util.DPUConnectionDetails) b
 
 // watchPodsDPU watch updates for pod DPU annotations
 func (bnnc *BaseNodeNetworkController) watchPodsDPU() (*factory.Handler, error) {
-	clientSet := cni.NewClientSet(bnnc.client, corev1listers.NewPodLister(bnnc.watchFactory.LocalPodInformer().GetIndexer()))
+	clientSet := cni.NewClientSet(bnnc.client, corev1listers.NewPodLister(bnnc.watchFactory.LocalPodInformer().GetIndexer()), nil)
 
 	netName := bnnc.GetNetworkName()
 	return bnnc.watchFactory.AddPodHandler(cache.ResourceEventHandlerFuncs{

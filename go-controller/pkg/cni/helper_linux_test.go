@@ -1563,7 +1563,7 @@ func TestConfigureOVS(t *testing.T) {
 			var podLister v1mocks.PodLister
 			podLister.On("Pods", mock.AnythingOfType("string")).Return(&podNamespaceLister)
 			fakeClient := fake.NewSimpleClientset(&corev1.PodList{Items: []corev1.Pod{pod}})
-			clientset := NewClientSet(fakeClient, &podLister)
+			clientset := NewClientSet(fakeClient, &podLister, nil)
 			podRequest := &PodRequest{
 				PodNamespace: tc.podNs,
 				PodName:      tc.podName,

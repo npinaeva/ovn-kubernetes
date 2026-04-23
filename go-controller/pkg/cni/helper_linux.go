@@ -792,7 +792,7 @@ func (c *interfaceConfig) UnconfigureInterface() error {
 	pr := c.pr
 	ifInfo := c.ifInfo
 
-	podDesc := fmt.Sprintf("for pod %s/%s NAD %s", pr.PodNamespace, pr.PodName, pr.nadName)
+	podDesc := fmt.Sprintf("for pod %s/%s NAD %s", pr.PodNamespace, pr.PodName, pr.NadName)
 	klog.V(5).Infof("Tear down interface (%+v) %s", *pr, podDesc)
 	if ifInfo.IsDPUHostMode {
 		if pr.CNIConf.DeviceID == "" {
@@ -807,7 +807,7 @@ func (c *interfaceConfig) UnconfigureInterface() error {
 	}
 
 	ifnameSuffix := ""
-	isSecondary := pr.netName != types.DefaultNetworkName
+	isSecondary := pr.NetName != types.DefaultNetworkName
 	// nothing needs to be done for the VFIO case in the container namespace
 	if !pr.IsVFIO {
 		netns, err := ns.GetNS(pr.Netns)

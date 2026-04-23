@@ -126,11 +126,11 @@ var _ = Describe("Network Segmentation", func() {
 			},
 			timestamp: time.Time{},
 			IsVFIO:    false,
-			netName:   ovntypes.DefaultNetworkName,
-			nadName:   ovntypes.DefaultNetworkName,
-			nadKey:    ovntypes.DefaultNetworkName,
+			NetName:   ovntypes.DefaultNetworkName,
+			NadName:   ovntypes.DefaultNetworkName,
+			NadKey:    ovntypes.DefaultNetworkName,
 		}
-		pr.Ctx, pr.cancel = context.WithTimeout(context.Background(), 2*time.Minute)
+		pr.Ctx, pr.Cancel = context.WithTimeout(context.Background(), 2*time.Minute)
 
 		podNamespaceLister = v1mocks.PodNamespaceLister{}
 		podLister = v1mocks.PodLister{}
@@ -166,17 +166,17 @@ var _ = Describe("Network Segmentation", func() {
 				},
 			}
 		})
-		It("should not fail at cmdAdd or cmdDel", func() {
+		It("should not fail at CmdAdd or CmdDel", func() {
 			podNamespaceLister.On("Get", pr.PodName).Return(pod, nil)
 
 			ovsClient, err := newOVSClientWithExternalIDs(map[string]string{})
 			Expect(err).NotTo(HaveOccurred())
-			By("cmdAdd primary pod interface should be added")
-			Expect(pr.cmdAdd(kubeAuth, clientSet, networkmanager.Default().Interface(), ovsClient)).NotTo(BeNil())
+			By("CmdAdd primary pod interface should be added")
+			Expect(pr.CmdAdd(kubeAuth, clientSet, networkmanager.Default().Interface(), ovsClient)).NotTo(BeNil())
 			Expect(prInterfaceOpsStub.obtainedPodIterfaceInfos).ToNot(BeEmpty())
-			By("cmdDel primary pod interface should be removed")
+			By("CmdDel primary pod interface should be removed")
 			podNamespaceLister.On("Get", pr.PodName).Return(pod, nil)
-			Expect(pr.cmdDel(clientSet)).NotTo(BeNil())
+			Expect(pr.CmdDel(clientSet)).NotTo(BeNil())
 			Expect(prInterfaceOpsStub.unconfiguredInterfaces).To(HaveLen(1))
 		})
 	})
@@ -200,20 +200,20 @@ var _ = Describe("Network Segmentation", func() {
 			})
 
 			Context("with CNI Privileged Mode", func() {
-				It("should not fail at cmdAdd or cmdDel", func() {
+				It("should not fail at CmdAdd or CmdDel", func() {
 					podNamespaceLister.On("Get", pr.PodName).Return(pod, nil)
 					ovsClient, err := newOVSClientWithExternalIDs(map[string]string{})
 					Expect(err).NotTo(HaveOccurred())
-					By("cmdAdd primary pod interface should be added")
-					response, err := pr.cmdAdd(kubeAuth, clientSet, networkmanager.Default().Interface(), ovsClient)
+					By("CmdAdd primary pod interface should be added")
+					response, err := pr.CmdAdd(kubeAuth, clientSet, networkmanager.Default().Interface(), ovsClient)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(response.Result).NotTo(BeNil())
 					Expect(prInterfaceOpsStub.obtainedPodIterfaceInfos).ToNot(BeEmpty())
 					Expect(response.PrimaryUDNPodInfo).To(BeNil())
 					Expect(response.PrimaryUDNPodReq).To(BeNil())
-					By("cmdDel primary pod interface should be removed")
+					By("CmdDel primary pod interface should be removed")
 					podNamespaceLister.On("Get", pr.PodName).Return(pod, nil)
-					Expect(pr.cmdDel(clientSet)).NotTo(BeNil())
+					Expect(pr.CmdDel(clientSet)).NotTo(BeNil())
 					Expect(prInterfaceOpsStub.unconfiguredInterfaces).To(HaveLen(1))
 				})
 			})
@@ -222,20 +222,20 @@ var _ = Describe("Network Segmentation", func() {
 				BeforeEach(func() {
 					config.UnprivilegedMode = true
 				})
-				It("should not fail at cmdAdd", func() {
+				It("should not fail at CmdAdd", func() {
 					podNamespaceLister.On("Get", pr.PodName).Return(pod, nil)
 					ovsClient, err := newOVSClientWithExternalIDs(map[string]string{})
 					Expect(err).NotTo(HaveOccurred())
-					response, err := pr.cmdAdd(kubeAuth, clientSet, networkmanager.Default().Interface(), ovsClient)
+					response, err := pr.CmdAdd(kubeAuth, clientSet, networkmanager.Default().Interface(), ovsClient)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(response.Result).To(BeNil())
 					Expect(prInterfaceOpsStub.obtainedPodIterfaceInfos).To(BeEmpty())
 					Expect(response.PrimaryUDNPodReq).To(BeNil())
 					Expect(response.PrimaryUDNPodInfo).To(BeNil())
 				})
-				It("should not fail at cmdDel", func() {
+				It("should not fail at CmdDel", func() {
 					podNamespaceLister.On("Get", pr.PodName).Return(pod, nil)
-					response, err := pr.cmdDel(clientSet)
+					response, err := pr.CmdDel(clientSet)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(response.Result).To(BeNil())
 					Expect(response.PodIFInfo).ToNot(BeNil())
@@ -290,7 +290,7 @@ var _ = Describe("Network Segmentation", func() {
 					podNamespaceLister.On("Get", pr.PodName).Return(pod, nil)
 					ovsClient, err := newOVSClientWithExternalIDs(map[string]string{})
 					Expect(err).NotTo(HaveOccurred())
-					response, err := pr.cmdAdd(kubeAuth, clientSet, fakeNetworkManager, ovsClient)
+					response, err := pr.CmdAdd(kubeAuth, clientSet, fakeNetworkManager, ovsClient)
 					Expect(err).NotTo(HaveOccurred())
 					// for every interface added, we return 2 interfaces; the host side of the
 					// veth, then the pod side of the veth.
@@ -366,7 +366,7 @@ var _ = Describe("Network Segmentation", func() {
 					podNamespaceLister.On("Get", pr.PodName).Return(pod, nil)
 					ovsClient, err := newOVSClientWithExternalIDs(map[string]string{})
 					Expect(err).NotTo(HaveOccurred())
-					response, err := pr.cmdAdd(kubeAuth, clientSet, fakeNetworkManager, ovsClient)
+					response, err := pr.CmdAdd(kubeAuth, clientSet, fakeNetworkManager, ovsClient)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(response.Result).To(BeNil())
 					podNADAnnotation, err := util.UnmarshalPodAnnotation(pod.Annotations, "foo-ns/meganet")
