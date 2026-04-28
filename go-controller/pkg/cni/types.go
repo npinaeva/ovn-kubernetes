@@ -188,6 +188,7 @@ type PodRequest struct {
 
 	// the DeviceInfo struct
 	DeviceInfo nadapi.DeviceInfo
+	IfIndex    int
 }
 
 type interfaceConfig struct {
@@ -196,7 +197,7 @@ type interfaceConfig struct {
 	clientset PodInfoGetter
 }
 
-type podRequestFunc func(request *PodRequest, clientset *ClientSet, kubeAuth *KubeAPIAuth, networkManager networkmanager.Interface, ovsClient client.Client) ([]byte, error)
+type podRequestFunc func(request *PodRequest, clientset *ClientSet, kubeAuth *KubeAPIAuth, networkManager networkmanager.Interface, ovsClient client.Client) (*Response, error)
 
 type PodInfoGetter interface {
 	getPod(namespace, name string) (*corev1.Pod, error)

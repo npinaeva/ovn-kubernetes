@@ -146,7 +146,7 @@ RUN INSTALL_PKGS=" \
     python3-pip python3-pyyaml bind-utils procps-ng openssl numactl-libs firewalld-filesystem \
     libpcap hostname kubernetes-client util-linux \
     ovn ovn-central ovn-host python3-openvswitch tcpdump openvswitch-test python3-pyOpenSSL \
-    iptables nftables iproute iputils strace socat \
+    iptables nftables iproute iputils strace socat hwdata \
     libreswan openvswitch-ipsec \
     " && \
     dnf install --best --refresh -y --setopt=tsflags=nodocs $INSTALL_PKGS && \
@@ -160,7 +160,7 @@ RUN rpm -Uhv --nodeps --force /*.rpm
 # Built in ../../go_controller, then the binaries are copied here.
 # put things where they are in the pkg
 RUN mkdir -p /usr/libexec/cni/
-COPY --from=ovnkube-builder /workspace/ovn-kubernetes/dist/images/ovnkube /workspace/ovn-kubernetes/dist/images/ovn-kube-util /workspace/ovn-kubernetes/dist/images/ovndbchecker /workspace/ovn-kubernetes/dist/images/hybrid-overlay-node /workspace/ovn-kubernetes/dist/images/ovnkube-identity /workspace/ovn-kubernetes/dist/images/ovnkube-observ /usr/bin/
+COPY --from=ovnkube-builder /workspace/ovn-kubernetes/dist/images/ovnkube /workspace/ovn-kubernetes/dist/images/ovn-kube-util /workspace/ovn-kubernetes/dist/images/ovndbchecker /workspace/ovn-kubernetes/dist/images/hybrid-overlay-node /workspace/ovn-kubernetes/dist/images/ovnkube-identity /workspace/ovn-kubernetes/dist/images/ovnkube-observ /workspace/ovn-kubernetes/dist/images/ovnkube-devices /usr/bin/
 COPY --from=ovnkube-builder /workspace/ovn-kubernetes/dist/images/git_info /root
 COPY --from=ovnkube-builder /workspace/ovn-kubernetes/dist/images/ovn-k8s-cni-overlay /usr/libexec/cni/ovn-k8s-cni-overlay
 

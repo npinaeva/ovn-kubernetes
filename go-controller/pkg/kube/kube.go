@@ -243,7 +243,7 @@ func (k *Kube) PatchPodStatusAnnotations(oldPod, newPod *corev1.Pod) error {
 		"status",
 	)
 	if err != nil {
-		klog.Errorf("Error in patching annotations on pod %s: %v", podDesc, err)
+		klog.Errorf("Error in patching annotations on pod %s: %v, old annotations %+v, new annotations %+v", podDesc, err, oldPod.Annotations, newPod.Annotations)
 	}
 	return err
 }

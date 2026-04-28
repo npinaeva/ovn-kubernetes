@@ -6,22 +6,31 @@ package dra
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/containerd/nri/pkg/api"
-	"github.com/containernetworking/plugins/pkg/ns"
-	"github.com/vishvananda/netlink"
-
+	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+	nadutils "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/utils"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni"
+	ovncnitypes "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni/types"
+	types2 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 )
 
 // Synchronize handles initial NRI synchronization.
-func (k *NetworkDriver) Synchronize(_ context.Context, _ []*api.PodSandbox, _ []*api.Container) ([]*api.ContainerUpdate, error) {
+func (k *NetworkDriver) Synchronize(_ context.Context, pods []*api.PodSandbox, containers []*api.Container) ([]*api.ContainerUpdate, error) {
+	klog.Infof("Synchronized state with the runtime (%d pods, %d containers)...",
+		len(pods), len(containers))
 	return nil, nil
 }
 
 // RunPodSandbox is called when a pod is created by the Container Runtime.
 func (k *NetworkDriver) RunPodSandbox(_ context.Context, pod *api.PodSandbox) error {
+	// pod.Annotations only has anntoations pod was created with
+	klog.Infof("DEBUG: RunPodSandbox called for pod %s", pod.Name)
 	podUID := types.UID(pod.Uid)
 	networkNamespace := getNetworkNamespace(pod)
 	if networkNamespace == "" {
@@ -31,31 +40,128 @@ func (k *NetworkDriver) RunPodSandbox(_ context.Context, pod *api.PodSandbox) er
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
-	devices := k.sharedState.PodDeviceConfig[podUID]
-	preparedData := k.sharedState.PreparedData[podUID]
-
-	for _, device := range devices {
-		if err := k.configureDeviceForPod(device, networkNamespace, pod, preparedData); err != nil {
-			return err
+	nads, err := k.getPodAttachments(pod)
+	if err != nil {
+		return fmt.Errorf("failed to get pod attachments for pod %s: %w", pod.Name, err)
+	}
+	usedClaims := make(map[types.UID]bool)
+	for i, nad := range nads {
+		klog.Infof("DEBUG: pod %s has NAD annotation %s/%s, ignoring %v", pod.Name, nad.Namespace, nad.Name, nad.Annotations["k8s.ovn.org/deviceClass"] == "")
+		if deviceClassName, ok := nad.Annotations["k8s.ovn.org/deviceClass"]; ok {
+			// NRI call
+			if deviceClassName == "virtual" {
+				err := k.configureDeviceForPod(networkNamespace, pod, nil, nad, i)
+				if err != nil {
+					return fmt.Errorf("failed to configure virtual device for pod %s: %w", pod.Name, err)
+				}
+			} else {
+				// each NAD attachment with deviceClass annotation should use one claim
+				foundClaim := false
+				for claimUID, claim := range k.sharedState.ResourceClaims {
+					if claim.podUID != podUID {
+						continue
+					}
+					if claim.deviceClassName == deviceClassName && !usedClaims[claimUID] {
+						usedClaims[claimUID] = true
+						foundClaim = true
+						err := k.configureDeviceForPod(networkNamespace, pod, claim, nad, i)
+						if err != nil {
+							return fmt.Errorf("failed to configure device for pod %s: %w", pod.Name, err)
+						}
+					}
+				}
+				if !foundClaim {
+					return fmt.Errorf("no resource claim found for nad %s with device class %s", nad.Name, deviceClassName)
+				}
+			}
 		}
 	}
 	return nil
 }
 
+func (k *NetworkDriver) getPodAttachments(pod *api.PodSandbox) ([]*nadapi.NetworkAttachmentDefinition, error) {
+	// find if this pod has secondary NAD attachments requested
+	netAttachment := pod.Annotations[nadapi.NetworkAttachmentAnnot]
+	var nads []*nadapi.NetworkAttachmentDefinition
+	if netAttachment != "" {
+		networks, err := nadutils.ParseNetworkAnnotation(netAttachment, pod.Namespace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse network annotation for pod %s: %w", pod.Name, err)
+		}
+		for _, net := range networks {
+			nad, err := k.nadLister.NetworkAttachmentDefinitions(pod.Namespace).Get(net.Name)
+			if err != nil {
+				return nil, fmt.Errorf("failed to list NetworkAttachmentDefinitions: %w", err)
+			}
+			nads = append(nads, nad)
+		}
+	}
+	// check primary network, it is important to attach primary nad in the end to no screw up interface name indexing
+	// TODO add namespace label check + wait
+	allNads, err := k.nadLister.NetworkAttachmentDefinitions(pod.Namespace).List(labels.Everything())
+	if err != nil {
+		return nil, fmt.Errorf("failed to list NetworkAttachmentDefinitions: %w", err)
+	}
+	for _, nad := range allNads {
+		netconf, err := util.ParseNetConf(nad)
+		if err != nil {
+			klog.Infof("Failed to parse NetConf for pod %s: %v", pod.Name, err)
+			continue
+		}
+		if netconf.Role == types2.NetworkRolePrimary {
+			klog.Infof("DEBUG: pod %s has primary NAD annotation %s/%s", pod.Name, nad.Namespace)
+			nads = append(nads, nad)
+		}
+	}
+	return nads, nil
+}
+
 // StopPodSandbox is called when a pod is stopped by the Container Runtime.
 func (k *NetworkDriver) StopPodSandbox(_ context.Context, pod *api.PodSandbox) error {
+	klog.Infof("DEBUG: StopPodSandbox called for pod %s", pod.Name)
 	podUID := types.UID(pod.Uid)
 	networkNamespace := getNetworkNamespace(pod)
+	if networkNamespace == "" {
+		return nil // No network namespace, nothing to configure
+	}
 
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
-	devices := k.sharedState.PodDeviceConfig[podUID]
-	preparedData := k.sharedState.PreparedData[podUID]
+	// TODO check the minimal required info for delete
+	// TODO what multus does if NAD doesn't exist on delete
+	nads, err := k.getPodAttachments(pod)
+	if err != nil {
+		return fmt.Errorf("failed to get pod attachments for pod %s: %w", pod.Name, err)
+	}
 
-	for _, device := range devices {
-		if err := k.cleanupDeviceForPod(device, networkNamespace, pod, preparedData); err != nil {
-			klog.Infof("Failed to cleanup device %s for pod %s: %v", device.Name, pod.Name, err)
+	for i, nad := range nads {
+		klog.Infof("DEBUG: pod %s has NAD annotation %s/%s, ignoring %v", pod.Name, nad.Namespace, nad.Name, nad.Annotations["k8s.ovn.org/deviceClass"] == "")
+		if deviceClassName, ok := nad.Annotations["k8s.ovn.org/deviceClass"]; ok {
+			// NRI call
+			if deviceClassName == "virtual" {
+				err := k.cleanupDeviceForPod(networkNamespace, pod, nil, nad, i)
+				if err != nil {
+					return fmt.Errorf("failed to cleanup virtual device for pod %s: %w", pod.Name, err)
+				}
+			} else {
+				foundClaim := false
+				for _, claim := range k.sharedState.ResourceClaims {
+					if claim.podUID != podUID {
+						continue
+					}
+					if claim.deviceClassName == deviceClassName {
+						foundClaim = true
+						err := k.cleanupDeviceForPod(networkNamespace, pod, claim, nad, i)
+						if err != nil {
+							return fmt.Errorf("failed to cleanup device for pod %s: %w", pod.Name, err)
+						}
+					}
+				}
+				if !foundClaim {
+					return fmt.Errorf("no claim found for pod %s with device class %s", pod.Name, deviceClassName)
+				}
+			}
 		}
 	}
 	return nil
@@ -66,29 +172,91 @@ func (k *NetworkDriver) RemovePodSandbox(_ context.Context, pod *api.PodSandbox)
 	podUID := types.UID(pod.Uid)
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	delete(k.sharedState.PodDeviceConfig, podUID)
-	delete(k.sharedState.PreparedData, podUID)
+	delete(k.sharedState.ResourceClaims, podUID)
 	return nil
 }
 
-func (k *NetworkDriver) configureDeviceForPod(_ AllocatedDevice, networkNamespace string, _ *api.PodSandbox, preparedData interface{}) error {
-	hostDeviceName, ok := preparedData.(string)
-	if !ok {
-		return fmt.Errorf("invalid prepared data type: expected string, got %T", preparedData)
+func makePodRequest(networkNamespace string, pod *api.PodSandbox, claim *ClaimData, nad *nadapi.NetworkAttachmentDefinition, attachmentIdx int) (cni.PodRequest, error) {
+	netconf, err := util.ParseNetConf(nad)
+	if err != nil {
+		return cni.PodRequest{}, fmt.Errorf("failed to parse network annotation for pod %s: %w", pod.Name, err)
+	}
+	ifName := fmt.Sprintf("net%v", attachmentIdx+1)
+	if netconf.Role == types2.NetworkRolePrimary {
+		ifName = "ovn-udn1"
+	}
+	nadName := nad.Namespace + "/" + nad.Name
+
+	deviceID := ""
+	isVFIO := false
+	if claim != nil {
+		deviceID = claim.deviceName
+		if deviceID != "" {
+			isVFIO = util.GetSriovnetOps().IsVfPciVfioBound(deviceID)
+		}
 	}
 
-	podInterfaceName := hostDeviceName
-	return nsAttachNetdev(hostDeviceName, networkNamespace, podInterfaceName)
+	cniConf := &ovncnitypes.NetConf{
+		DeviceID: deviceID,
+		MTU:      netconf.MTU,
+	}
+
+	podrequest := cni.PodRequest{
+		Command:      cni.CNIAdd,
+		PodNamespace: pod.Namespace,
+		PodName:      pod.Name,
+		PodUID:       pod.Uid,
+		SandboxID:    pod.Id,
+		Netns:        networkNamespace,
+		IfName:       ifName,
+		CNIConf:      cniConf,
+		// TODO
+		IsVFIO:     isVFIO,
+		NetName:    netconf.Name,
+		NadName:    nadName,
+		DeviceInfo: nadapi.DeviceInfo{},
+	}
+	podrequest.Ctx, podrequest.Cancel = context.WithTimeout(context.Background(), time.Minute)
+	return podrequest, nil
 }
 
-func (k *NetworkDriver) cleanupDeviceForPod(_ AllocatedDevice, networkNamespace string, _ *api.PodSandbox, preparedData interface{}) error {
-	hostDeviceName, ok := preparedData.(string)
-	if !ok {
-		return fmt.Errorf("invalid prepared data type: expected string, got %T", preparedData)
+func (k *NetworkDriver) configureDeviceForPod(networkNamespace string, pod *api.PodSandbox, claim *ClaimData,
+	nad *nadapi.NetworkAttachmentDefinition, attachmentIdx int) error {
+
+	podrequest, err := makePodRequest(networkNamespace, pod, claim, nad, attachmentIdx)
+	if err != nil {
+		return fmt.Errorf("failed to make pod request for pod %s: %w", pod.Name, err)
+	}
+	klog.Infof("DEBUG: preparing to configure device %s for pod %s in network namespace %s", podrequest.CNIConf.DeviceID, pod.Name, networkNamespace)
+
+	res, err := podrequest.CmdAdd(nil, k.clientset, k.networkManager, k.ovsClient)
+	if err != nil {
+		klog.Infof("DEBUG: NRI Add failed for pod %s: %v", pod.Name, err)
+		return fmt.Errorf("NRI Add failed for pod %s: %w", pod.Name, err)
+	}
+	klog.Infof("DEBUG: NRI Add result for pod %s: %+v, error: %v", pod.Name, res.Result, err)
+	return nil
+}
+
+func (k *NetworkDriver) cleanupDeviceForPod(networkNamespace string, pod *api.PodSandbox, claim *ClaimData,
+	nad *nadapi.NetworkAttachmentDefinition, attachmentIdx int) error {
+
+	// TODO check if I can do cleanup without NADs, probably using pod annotations
+
+	podrequest, err := makePodRequest(networkNamespace, pod, claim, nad, attachmentIdx)
+	if err != nil {
+		return fmt.Errorf("failed to make pod request for pod %s: %w", pod.Name, err)
 	}
 
-	podInterfaceName := hostDeviceName
-	return nsDetachNetdev(networkNamespace, podInterfaceName, hostDeviceName)
+	klog.Infof("DEBUG: preparing to cleanup device %s for pod %s in network namespace %s", podrequest.CNIConf.DeviceID, pod.Name, networkNamespace)
+
+	res, err := podrequest.CmdDel(k.clientset)
+	if err != nil {
+		klog.Infof("DEBUG: NRI DEL failed for pod %s: %v", pod.Name, err)
+		return fmt.Errorf("NRI DEL failed for pod %s: %w", pod.Name, err)
+	}
+	klog.Infof("DEBUG: NRI DEL result for pod %s: %v, error: %v", pod.Name, res.Result, err)
+	return nil
 }
 
 func getNetworkNamespace(pod *api.PodSandbox) string {
@@ -101,88 +269,4 @@ func getNetworkNamespace(pod *api.PodSandbox) string {
 		}
 	}
 	return ""
-}
-
-func nsAttachNetdev(hostDeviceName, targetNetnsPath, podInterfaceName string) error {
-	targetNs, err := ns.GetNS(targetNetnsPath)
-	if err != nil {
-		return fmt.Errorf("open target netns %q: %w", targetNetnsPath, err)
-	}
-	defer targetNs.Close()
-
-	link, err := netlink.LinkByName(hostDeviceName)
-	if err != nil {
-		return fmt.Errorf("find host device %q: %w", hostDeviceName, err)
-	}
-
-	if err := netlink.LinkSetNsFd(link, int(targetNs.Fd())); err != nil {
-		return fmt.Errorf("move device %q to netns %q: %w", hostDeviceName, targetNetnsPath, err)
-	}
-
-	return targetNs.Do(func(_ ns.NetNS) error {
-		movedLink, err := netlink.LinkByName(hostDeviceName)
-		if err != nil {
-			return fmt.Errorf("find moved device %q in target netns: %w", hostDeviceName, err)
-		}
-		if podInterfaceName != hostDeviceName {
-			if err := netlink.LinkSetName(movedLink, podInterfaceName); err != nil {
-				return fmt.Errorf("rename %q to %q in target netns: %w", hostDeviceName, podInterfaceName, err)
-			}
-			movedLink, err = netlink.LinkByName(podInterfaceName)
-			if err != nil {
-				return fmt.Errorf("find renamed device %q in target netns: %w", podInterfaceName, err)
-			}
-		}
-		if err := netlink.LinkSetUp(movedLink); err != nil {
-			return fmt.Errorf("set device %q up in target netns: %w", podInterfaceName, err)
-		}
-		return nil
-	})
-}
-
-func nsDetachNetdev(podNetnsPath, podInterfaceName, hostDeviceName string) error {
-	podNs, err := ns.GetNS(podNetnsPath)
-	if err != nil {
-		return fmt.Errorf("open pod netns %q: %w", podNetnsPath, err)
-	}
-	defer podNs.Close()
-
-	hostNs, err := ns.GetCurrentNS()
-	if err != nil {
-		return fmt.Errorf("open host netns: %w", err)
-	}
-	defer hostNs.Close()
-
-	if err := podNs.Do(func(_ ns.NetNS) error {
-		link, err := netlink.LinkByName(podInterfaceName)
-		if err != nil {
-			return fmt.Errorf("find pod device %q: %w", podInterfaceName, err)
-		}
-		if err := netlink.LinkSetNsFd(link, int(hostNs.Fd())); err != nil {
-			return fmt.Errorf("move %q back to host netns: %w", podInterfaceName, err)
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	return hostNs.Do(func(_ ns.NetNS) error {
-		link, err := netlink.LinkByName(podInterfaceName)
-		if err != nil {
-			return fmt.Errorf("find returned device %q in host netns: %w", podInterfaceName, err)
-		}
-		if podInterfaceName != hostDeviceName {
-			if err := netlink.LinkSetName(link, hostDeviceName); err != nil {
-				return fmt.Errorf("rename %q to %q in host netns: %w", podInterfaceName, hostDeviceName, err)
-			}
-			link, err = netlink.LinkByName(hostDeviceName)
-			if err != nil {
-				return fmt.Errorf("find renamed host device %q: %w", hostDeviceName, err)
-			}
-		}
-		if err := netlink.LinkSetUp(link); err != nil {
-			return fmt.Errorf("set device %q up in host netns: %w", hostDeviceName, err)
-		}
-		return nil
-	})
 }

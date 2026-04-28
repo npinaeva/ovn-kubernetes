@@ -166,11 +166,13 @@ func (pr *PodRequest) CmdAdd(
 		return nil, fmt.Errorf("failed to get pod %s/%s: %v", namespace, podName, err)
 	}
 
-	if pr.NetName != types.DefaultNetworkName {
+	// TODO check if primary network instead
+	if pr.NetName != types.DefaultNetworkName && pr.IfName != "ovn-udn1" {
 		nadKey, err := GetCNINADKey(pod, pr.IfName, pr.NadName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get NAD key for CNI Add request %v: %v", pr, err)
 		}
+		klog.Infof("Pod %s/%s NAD key for interface %s is %s", namespace, podName, pr.IfName, nadKey)
 		pr.NadKey = nadKey
 	} else {
 		pr.NadKey = pr.NadName
@@ -180,11 +182,11 @@ func (pr *PodRequest) CmdAdd(
 	netdevName := ""
 	if pr.CNIConf.DeviceID != "" {
 		var err error
-
 		if !pr.IsVFIO {
 			netdevName, err = util.GetNetdevNameFromDeviceId(pr.CNIConf.DeviceID, pr.DeviceInfo)
 			if err != nil {
-				return nil, fmt.Errorf("failed in cmdAdd while getting Netdevice name: %w", err)
+				netdevName = pr.CNIConf.DeviceID
+				//return nil, fmt.Errorf("failed in cmdAdd while getting Netdevice name: %w", err)
 			}
 		}
 		if config.OvnKubeNode.Mode == types.NodeModeDPUHost {
@@ -201,13 +203,6 @@ func (pr *PodRequest) CmdAdd(
 	// Get the IP address and MAC address of the pod
 	// for DPU, ensure connection-details is present
 
-	primaryUDN := udn.NewPrimaryNetwork(networkManager, clientset.nadLister)
-	if util.IsNetworkSegmentationSupportEnabled() {
-		annotCondFn = primaryUDN.WaitForPrimaryAnnotationFn(annotCondFn)
-		// checks for primary UDN network's DPU connections status
-		annotCondFn = pr.primaryDPUReady(primaryUDN, kubecli, clientset.podLister, annotCondFn)
-	}
-
 	// now checks for default network's DPU connection status
 	if config.OvnKubeNode.Mode == types.NodeModeDPUHost {
 		if pr.CNIConf.DeviceID != "" {
@@ -217,16 +212,6 @@ func (pr *PodRequest) CmdAdd(
 	pod, annotations, podNADAnnotation, err := GetPodWithAnnotations(pr.Ctx, clientset, namespace, podName, pr.NadKey, annotCondFn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod annotation: %v", err)
-	}
-
-	var primaryUDNPodInfo *PodInterfaceInfo
-	primaryUDNPodRequest := pr.buildPrimaryUDNPodRequest(primaryUDN)
-	if primaryUDNPodRequest != nil {
-		primaryUDNPodInfo, err = primaryUDNPodRequest.buildPodInterfaceInfo(annotations, primaryUDN.Annotation(), primaryUDN.NetworkDevice())
-		if err != nil {
-			return nil, err
-		}
-		klog.V(4).Infof("Pod %s/%s primaryUDN podRequest %v podInfo %v", namespace, podName, primaryUDNPodRequest, primaryUDNPodInfo)
 	}
 
 	if err = pr.checkOrUpdatePodUID(pod); err != nil {
@@ -259,22 +244,17 @@ func (pr *PodRequest) CmdAdd(
 			}
 		}
 
-		response.Result, err = getCNIResult(pr, clientset, podInterfaceInfo)
+		response.Result, err = getCNIResult(pr, clientset, podInterfaceInfo, pr.IfIndex)
 		if err != nil {
 			return nil, err
 		}
-		if primaryUDNPodRequest != nil {
-			err = primaryUDNCmdAddGetCNIResultFunc(response.Result, primaryUDNPodRequest, clientset, primaryUDNPodInfo)
-			if err != nil {
-				return nil, err
-			}
-		}
 	} else {
 		response.PodIFInfo = podInterfaceInfo
-		if primaryUDNPodRequest != nil {
-			response.PrimaryUDNPodInfo = primaryUDNPodInfo
-			response.PrimaryUDNPodReq = primaryUDNPodRequest
-		}
+		// TODO change to podRequests
+		//if primaryUDNPodRequest != nil {
+		//	response.PrimaryUDNPodInfo = primaryUDNPodInfo
+		//	response.PrimaryUDNPodReq = primaryUDNPodRequest
+		//}
 	}
 
 	return response, nil
@@ -282,7 +262,7 @@ func (pr *PodRequest) CmdAdd(
 
 func primaryUDNCmdAddGetCNIResultFunc(result *current.Result, primaryUDNPodRequest *PodRequest,
 	clientset PodInfoGetter, primaryUDNPodInfo *PodInterfaceInfo) error {
-	primaryUDNResult, err := getCNIResult(primaryUDNPodRequest, clientset, primaryUDNPodInfo)
+	primaryUDNResult, err := getCNIResult(primaryUDNPodRequest, clientset, primaryUDNPodInfo, primaryUDNPodRequest.IfIndex)
 	if err != nil {
 		return err
 	}
@@ -355,7 +335,7 @@ func (pr *PodRequest) CmdDel(clientset *ClientSet) (*Response, error) {
 			}
 
 			netdevName = dpuCD.VfNetdevName
-			if pr.netName == types.DefaultNetworkName {
+			if pr.NetName == types.DefaultNetworkName {
 				// if this is the default network name, remove the whole DPU connection-details annotation,
 				// including the primary UDN connection-details if any
 				updatePodAnnotationNoRollback := func(pod *corev1.Pod) (*corev1.Pod, func(), error) {
@@ -445,17 +425,18 @@ func HandlePodRequest(
 	kubeAuth *KubeAPIAuth,
 	networkManager networkmanager.Interface,
 	ovsClient client.Client,
-) ([]byte, error) {
-	var result, resultForLogging []byte
+) (*Response, error) {
+	//var result, resultForLogging []byte
 	var response *Response
-	var err, err1 error
+	var err error
 
 	klog.Infof("%s %s starting CNI request %+v", request, request.Command, request)
+	klog.Infof("DEBUG: CNIConf %+v", request.CNIConf)
 	switch request.Command {
 	case CNIAdd:
-		response, err = request.cmdAdd(kubeAuth, clientset, networkManager, ovsClient)
+		response, err = request.CmdAdd(kubeAuth, clientset, networkManager, ovsClient)
 	case CNIDel:
-		response, err = request.cmdDel(clientset)
+		response, err = request.CmdDel(clientset)
 	case CNICheck:
 		err = request.cmdCheck()
 	case CNIUpdate:
@@ -465,32 +446,33 @@ func HandlePodRequest(
 	default:
 		err = fmt.Errorf("unsupported CNI command %s", request.Command)
 	}
+	return response, err
 
-	if response != nil {
-		if result, err1 = response.Marshal(); err1 != nil {
-			return nil, fmt.Errorf("%s %s CNI request %+v failed to marshal result: %v",
-				request, request.Command, request, err1)
-		}
-		if resultForLogging, err1 = response.MarshalForLogging(); err1 != nil {
-			klog.Errorf("%s %s CNI request %+v, %v", request, request.Command, request, err1)
-		}
-	}
-
-	klog.Infof("%s %s finished CNI request %+v, result %q, err %v",
-		request, request.Command, request, string(resultForLogging), err)
-
-	if err != nil {
-		// Prefix errors with request info for easier failure debugging
-		return nil, fmt.Errorf("%s %v", request, err)
-	}
-	return result, nil
+	//if response != nil {
+	//	if result, err1 = response.Marshal(); err1 != nil {
+	//		return nil, fmt.Errorf("%s %s CNI request %+v failed to marshal result: %v",
+	//			request, request.Command, request, err1)
+	//	}
+	//	if resultForLogging, err1 = response.MarshalForLogging(); err1 != nil {
+	//		klog.Errorf("%s %s CNI request %+v, %v", request, request.Command, request, err1)
+	//	}
+	//}
+	//
+	//klog.Infof("%s %s finished CNI request %+v, result %q, err %v",
+	//	request, request.Command, request, string(resultForLogging), err)
+	//
+	//if err != nil {
+	//	// Prefix errors with request info for easier failure debugging
+	//	return nil, fmt.Errorf("%s %v", request, err)
+	//}
+	//return result, nil
 }
 
 // getCNIResult get result from pod interface info.
 // PodInfoGetter is used to check if sandbox is still valid for the current
 // instance of the pod in the apiserver, see checkCancelSandbox for more info.
 // If kube api is not available from the CNI, pass nil to skip this check.
-func getCNIResult(pr *PodRequest, clientset PodInfoGetter, podInterfaceInfo *PodInterfaceInfo) (*current.Result, error) {
+func getCNIResult(pr *PodRequest, clientset PodInfoGetter, podInterfaceInfo *PodInterfaceInfo, index int) (*current.Result, error) {
 	ifConfig := NewInterfaceConfigForAdd(pr, clientset, podInterfaceInfo)
 	interfacesArray, err := ifConfig.ConfigureInterface()
 	if err != nil {
@@ -510,7 +492,7 @@ func getCNIResult(pr *PodRequest, clientset PodInfoGetter, podInterfaceInfo *Pod
 	ips := []*current.IPConfig{}
 	for _, ipcidr := range podInterfaceInfo.IPs {
 		ip := &current.IPConfig{
-			Interface: current.Int(1),
+			Interface: current.Int(index),
 			Address:   *ipcidr,
 		}
 		var ipVersion string

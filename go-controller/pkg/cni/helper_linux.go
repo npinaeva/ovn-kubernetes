@@ -163,6 +163,7 @@ func safeMoveIfToNetns(ifname string, netns ns.NetNS, containerID string) (newNe
 }
 
 func moveIfToNetns(ifname string, netns ns.NetNS) error {
+	klog.Infof("DEBUG: moving iface %s to netns %s", ifname, netns.Path())
 	dev, err := util.GetNetLinkOps().LinkByName(ifname)
 	if err != nil {
 		return fmt.Errorf("failed to lookup device %v: %q", ifname, err)
@@ -396,67 +397,14 @@ func (c *interfaceConfig) setupSriovInterface(netns ns.NetNS) (*current.Interfac
 	contIface := &current.Interface{}
 	netdevice := ifInfo.NetdevName
 
-	// 0. init contIface for VFIO
-	if pr.IsVFIO {
-		if util.IsAuxDeviceName(deviceID) {
-			return nil, nil, fmt.Errorf("VFIO not supported for device %s", deviceID)
-		}
-		// if the SR-IOV device is bound to VFIO, then there is nothing
-		// to do as it will be passed to the KVM VM directly
-		contIface.Name = pr.IfName
-		contIface.Mac = ifInfo.MAC.String()
-		contIface.Sandbox = netns.Path()
-	} else {
-		// 1. Move netdevice to Container namespace
-		if len(netdevice) != 0 {
-			newNetdevName, err := safeMoveIfToNetns(netdevice, netns, pr.SandboxID)
-			if err != nil {
-				return nil, nil, err
-			}
-			err = netns.Do(func(_ ns.NetNS) error {
-				contIface.Name = pr.IfName
-				err = renameLink(newNetdevName, contIface.Name)
-				if err != nil {
-					return err
-				}
-				link, err := util.GetNetLinkOps().LinkByName(contIface.Name)
-				if err != nil {
-					return err
-				}
-				err = util.GetNetLinkOps().LinkSetHardwareAddr(link, ifInfo.MAC)
-				if err != nil {
-					return err
-				}
-				err = util.GetNetLinkOps().LinkSetMTU(link, ifInfo.MTU)
-				if err != nil {
-					return err
-				}
-				err = util.GetNetLinkOps().LinkSetUp(link)
-				if err != nil {
-					return err
-				}
-
-				err = setupNetwork(link, ifInfo)
-				if err != nil {
-					return err
-				}
-
-				contIface.Mac = ifInfo.MAC.String()
-				contIface.Sandbox = netns.Path()
-
-				return nil
-			})
-			if err != nil {
-				return nil, nil, err
-			}
-		}
-	}
-
 	if !ifInfo.IsDPUHostMode {
 		// 2. get device representor name
 		hostRepName, err := util.GetFunctionRepresentorName(deviceID)
 		if err != nil {
-			return nil, nil, err
+			hostRepName, err = util.GetVethPeer(contIface.Name)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
 
 		if pr.IsVFIO {
@@ -478,6 +426,62 @@ func (c *interfaceConfig) setupSriovInterface(netns ns.NetNS) (*current.Interfac
 		// is added to br-int. This avoids a race where an old pod's CmdDel could bring down the
 		// same VF representor and remove it from br-int after we brought the link up but before
 		// we added it to br-int.
+	}
+
+	// 0. init contIface for VFIO
+	if pr.IsVFIO {
+		if util.IsAuxDeviceName(deviceID) {
+			return nil, nil, fmt.Errorf("VFIO not supported for device %s", deviceID)
+		}
+		// if the SR-IOV device is bound to VFIO, then there is nothing
+		// to do as it will be passed to the KVM VM directly
+		contIface.Name = pr.IfName
+		contIface.Mac = ifInfo.MAC.String()
+		contIface.Sandbox = netns.Path()
+	} else {
+		// 1. Move netdevice to Container namespace
+		if len(netdevice) != 0 {
+			newNetdevName, err := safeMoveIfToNetns(netdevice, netns, pr.SandboxID)
+			if err != nil {
+				return nil, nil, err
+			}
+			err = netns.Do(func(_ ns.NetNS) error {
+				contIface.Name = pr.IfName
+				err = renameLink(newNetdevName, contIface.Name)
+				if err != nil {
+					return fmt.Errorf("failed to rename %s to %s: %v", newNetdevName, contIface.Name, err)
+				}
+				link, err := util.GetNetLinkOps().LinkByName(contIface.Name)
+				if err != nil {
+					return fmt.Errorf("failed to lookup %s: %v", contIface.Name, err)
+				}
+				err = util.GetNetLinkOps().LinkSetHardwareAddr(link, ifInfo.MAC)
+				if err != nil {
+					return fmt.Errorf("failed to set MAC address for %s: %v", contIface.Name, err)
+				}
+				err = util.GetNetLinkOps().LinkSetMTU(link, ifInfo.MTU)
+				if err != nil {
+					return fmt.Errorf("failed to set MTU %v for %s: %v", ifInfo.MTU, contIface.Name, err)
+				}
+				err = util.GetNetLinkOps().LinkSetUp(link)
+				if err != nil {
+					return fmt.Errorf("failed to set UP for %s: %v", contIface.Name, err)
+				}
+
+				err = setupNetwork(link, ifInfo)
+				if err != nil {
+					return fmt.Errorf("failed to setup VFIO: %v", err)
+				}
+
+				contIface.Mac = ifInfo.MAC.String()
+				contIface.Sandbox = netns.Path()
+
+				return nil
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 
 	return hostIface, contIface, nil
@@ -715,6 +719,8 @@ func newInterfaceConfig(pr *PodRequest, clientset PodInfoGetter, ifInfo *PodInte
 func (c *interfaceConfig) ConfigureInterface() ([]*current.Interface, error) {
 	pr := c.pr
 	ifInfo := c.ifInfo
+	klog.Infof("DEBUG: ConfigureInterface for pod %s/%s NAD %s, SandboxID: %q, PCI device ID: %s, UID: %q, MAC: %s, IPs: %v",
+		pr.PodNamespace, pr.PodName, pr.NadName, pr.SandboxID, pr.CNIConf.DeviceID, ifInfo.PodUID, ifInfo.MAC, ifInfo.IPs)
 
 	netns, err := ns.GetNS(pr.Netns)
 	if err != nil {
@@ -812,7 +818,9 @@ func (c *interfaceConfig) UnconfigureInterface() error {
 	if !pr.IsVFIO {
 		netns, err := ns.GetNS(pr.Netns)
 		if err != nil {
-			return fmt.Errorf("failed to get container namespace %s: %v", podDesc, err)
+			klog.Errorf("DEBUG: failed to open netns %q for unconfiguring interface %s: %v", pr.Netns, podDesc, err)
+			return nil
+			//return fmt.Errorf("failed to get container namespace %s: %v", podDesc, err)
 		}
 		defer netns.Close()
 

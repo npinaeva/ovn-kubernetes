@@ -865,7 +865,8 @@ func (nc *DefaultNodeNetworkController) Init(ctx context.Context) error {
 			return fmt.Errorf("cannot get kubeclient for starting CNI server")
 		}
 		if config.OvnKubeNode.EnableDRA {
-			draDriver, err := dra.New(nc.name, kclient.KClient)
+			cniClientset := cni.NewClientSet(kclient.KClient, nc.watchFactory.PodCoreInformer().Lister(), nc.watchFactory.NADInformer().Lister())
+			draDriver, err := dra.New(nc.name, kclient.KClient, cniClientset, nc.networkManager, nc.watchFactory.NADInformer().Lister(), nc.ovsClient)
 			if err != nil {
 				return fmt.Errorf("failed to create DRA driver: %w", err)
 			}
@@ -875,6 +876,7 @@ func (nc *DefaultNodeNetworkController) Init(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		klog.Infof("DEBUG: CNI server started")
 		nc.cniServer = cniServer
 	}
 

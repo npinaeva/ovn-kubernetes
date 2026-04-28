@@ -48,6 +48,11 @@ kubeadmConfigPatches:
       "v": "{{ cluster_log_level }}"
 nodes:
  - role: control-plane
+   extraMounts:
+     - hostPath: {{ sriov_mock }}/sys/bus/pci
+       containerPath: /sys/bus/pci
+     - hostPath: {{ sriov_mock }}/sys/class/net
+       containerPath: /sys/class/net
    kubeadmConfigPatches:
    - |
      kind: InitConfiguration

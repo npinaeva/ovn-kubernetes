@@ -9,13 +9,12 @@ import (
 	"fmt"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // wait on a certain pod annotation related condition
@@ -181,7 +180,7 @@ func GetPodIfNamesForNAD(pod *corev1.Pod, nadName string) ([]string, error) {
 	return ifNames, nil
 }
 
-// GetCNINADKey gets the pod's nadKey (nadName with index in case there are multiple same NADs in the pod)
+// GetCNINADKey gets the pod's NadKey (nadName with index in case there are multiple same NADs in the pod)
 // Based on the given ifName, find out which number of this CNI request is for the given nadName, then
 // determine its associated NAD key.
 func GetCNINADKey(pod *corev1.Pod, ifName, nadName string) (string, error) {
@@ -194,8 +193,8 @@ func GetCNINADKey(pod *corev1.Pod, ifName, nadName string) (string, error) {
 			return util.GetIndexedNADKey(nadName, idx), nil
 		}
 	}
-	return "", fmt.Errorf("failed to find NAD key associated with CNI request for pod %s/%s with ifName %s",
-		pod.Namespace, pod.Name, ifName)
+	return "", fmt.Errorf("failed to find NAD key associated with CNI request for pod %s/%s with ifName %s for nad %s",
+		pod.Namespace, pod.Name, ifName, nadName)
 }
 
 // START taken from https://github.com/kubernetes/kubernetes/blob/master/pkg/kubelet/types/pod_update.go

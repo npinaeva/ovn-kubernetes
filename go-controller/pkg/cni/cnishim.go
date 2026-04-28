@@ -88,7 +88,6 @@ func (p *Plugin) doCNI(url string, req interface{}) ([]byte, error) {
 			},
 		},
 	}
-
 	resp, err := client.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("failed to send CNI request: %v", err)
@@ -266,7 +265,7 @@ func (p *Plugin) CmdAdd(args *skel.CmdArgs) error {
 		}
 
 		// In the case where ovnkube-node is running in Unprivileged mode, all the work
-		result, err = getCNIResult(pr, clientset, response.PodIFInfo)
+		result, err = getCNIResult(pr, clientset, response.PodIFInfo, pr.IfIndex)
 		if err != nil {
 			err = fmt.Errorf("failed to get CNI Result from pod interface info %v: %v", response.PodIFInfo, err)
 			klog.Error(err.Error())

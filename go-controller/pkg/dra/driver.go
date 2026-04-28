@@ -12,6 +12,10 @@ import (
 	"time"
 
 	"github.com/containerd/nri/pkg/stub"
+	nadv1Listers "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/listers/k8s.cni.cncf.io/v1"
+	"github.com/ovn-kubernetes/libovsdb/client"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/networkmanager"
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -34,10 +38,15 @@ type AllocatedDevice struct {
 	Request    string
 }
 
+type ClaimData struct {
+	podUID          types.UID
+	deviceName      string
+	deviceClassName string
+}
+
 // SharedState is shared between DRA hooks and NRI hooks.
 type SharedState struct {
-	PodDeviceConfig map[types.UID][]AllocatedDevice
-	PreparedData    map[types.UID]interface{}
+	ResourceClaims map[types.UID]*ClaimData
 }
 
 // NetworkDriver manages lifecycle of DRA and NRI plugins for one node.
@@ -50,18 +59,30 @@ type NetworkDriver struct {
 
 	mu          sync.Mutex
 	sharedState *SharedState
+	// resourceClaim to deviceName mapping to make sure the same device is not allocated twice
+	allocatedResources map[types.UID]string
+
+	clientset      *cni.ClientSet
+	networkManager networkmanager.Interface
+	ovsClient      client.Client
+	nadLister      nadv1Listers.NetworkAttachmentDefinitionLister
 }
 
 // New creates a DRA controller for a node.
-func New(nodeName string, kubeClient kubernetes.Interface) (*NetworkDriver, error) {
+func New(nodeName string, kubeClient kubernetes.Interface, clientset *cni.ClientSet, networkManager networkmanager.Interface,
+	nadLister nadv1Listers.NetworkAttachmentDefinitionLister, ovsClient client.Client) (*NetworkDriver, error) {
 	return &NetworkDriver{
 		driverName: driverName,
 		nodeName:   nodeName,
 		kubeClient: kubeClient,
 		sharedState: &SharedState{
-			PodDeviceConfig: make(map[types.UID][]AllocatedDevice),
-			PreparedData:    make(map[types.UID]interface{}),
+			ResourceClaims: make(map[types.UID]*ClaimData),
 		},
+		clientset:          clientset,
+		networkManager:     networkManager,
+		nadLister:          nadLister,
+		ovsClient:          ovsClient,
+		allocatedResources: make(map[types.UID]string),
 	}, nil
 }
 
@@ -104,6 +125,7 @@ func (k *NetworkDriver) Start(ctx context.Context) error {
 	go k.runNRIPlugin(ctx)
 	go k.publishResources(ctx)
 
+	// TODO get all resourceClaims that are allocated
 	return nil
 }
 

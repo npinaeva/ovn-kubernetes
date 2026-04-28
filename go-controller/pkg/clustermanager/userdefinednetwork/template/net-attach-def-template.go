@@ -118,7 +118,7 @@ func renderNADAnnotations(obj client.Object) map[string]string {
 	udnAnnotations := obj.GetAnnotations()
 	annotations := make(map[string]string)
 	for k, v := range udnAnnotations {
-		if !strings.HasPrefix(k, types.OvnK8sPrefix) {
+		if k == "k8s.ovn.org/deviceClass" || !strings.HasPrefix(k, types.OvnK8sPrefix) {
 			annotations[k] = v
 		}
 	}

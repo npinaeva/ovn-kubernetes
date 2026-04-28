@@ -15,6 +15,7 @@ import (
 	"github.com/k8snetworkplumbingwg/govdpa/pkg/kvdpa"
 	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/k8snetworkplumbingwg/sriovnet"
+	"github.com/vishvananda/netlink"
 
 	"k8s.io/klog/v2"
 )
@@ -124,6 +125,35 @@ func (defaultSriovnetOps) GetPortIndexFromRepresentor(name string) (int, error) 
 	return sriovnet.GetPortIndexFromRepresentor(name)
 }
 
+func GetVethPeer(ifname string) (string, error) {
+	// 1. Get the link object by name (e.g., "eth0" inside the container)
+	link, err := GetNetLinkOps().LinkByName(ifname)
+	if err != nil {
+		return "", fmt.Errorf("failed to find link %s: %v", ifname, err)
+	}
+
+	// 2. Ensure it is actually a veth device
+	veth, ok := link.(*netlink.Veth)
+	if !ok {
+		return "", fmt.Errorf("interface %s is not a veth pair", ifname)
+	}
+
+	// 3. Get the index of the peer
+	// Note: vishvananda/netlink provides a specific helper for this
+	peerIdx, err := netlink.VethPeerIndex(veth)
+	if err != nil {
+		return "", fmt.Errorf("failed to get peer index: %v", err)
+	}
+
+	// 4. Look up the peer link using the index
+	peerLink, err := GetNetLinkOps().LinkByIndex(peerIdx)
+	if err != nil {
+		return "", fmt.Errorf("failed to find peer link by index %d: %v", peerIdx, err)
+	}
+
+	return peerLink.Attrs().Name, nil
+}
+
 // GetFunctionRepresentorName returns representor name for passed device ID. Supported devices are Virtual Function
 // or Scalable Function
 func GetFunctionRepresentorName(deviceID string) (string, error) {
@@ -152,7 +182,7 @@ func GetFunctionRepresentorName(deviceID string) (string, error) {
 		}
 		rep, err = GetSriovnetOps().GetSfRepresentor(uplink, index)
 	} else {
-		return "", fmt.Errorf("cannot determine device type for id '%s'", deviceID)
+		rep, err = GetVethPeer(deviceID)
 	}
 	if err != nil {
 		return "", err

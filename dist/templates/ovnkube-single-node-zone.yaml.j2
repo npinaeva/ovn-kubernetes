@@ -320,6 +320,12 @@ spec:
         - mountPath: /run/ovnkube-config
           name: ovnkube-config
           readOnly: true
+        - mountPath: /sys/bus/pci
+          name: sys-bus-pci
+          readOnly: true
+        - mountPath: /sys/class/net
+          name: sys-class-net
+          readOnly: true
 
         resources:
           requests:
@@ -700,6 +706,12 @@ spec:
       - name: host-devinfo-dp
         hostPath:
           path: /var/run/k8s.cni.cncf.io/devinfo/dp
+      - name: sys-bus-pci
+        hostPath:
+          path: /sys/bus/pci
+      - name: sys-class-net
+        hostPath:
+          path: /sys/class/net
 
       tolerations:
       - operator: "Exists"
