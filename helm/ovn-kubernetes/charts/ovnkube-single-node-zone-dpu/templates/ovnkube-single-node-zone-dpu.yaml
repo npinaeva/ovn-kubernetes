@@ -391,6 +391,10 @@ spec:
           value: {{ default "" .Values.global.lFlowCacheLimitKb | quote }}
         - name: OVN_MULTI_NETWORK_ENABLE
           value: {{ hasKey .Values.global "enableMultiNetwork" | ternary .Values.global.enableMultiNetwork false | quote }}
+        - name: OVN_DRA_ENABLE
+          value: {{ hasKey .Values.global "enableDRA" | ternary .Values.global.enableDRA false | quote }}
+        - name: OVN_DRA_FILTER
+          value: {{ default "" .Values.global.draFilter | quote }}
         - name: OVN_NETWORK_SEGMENTATION_ENABLE
           value: {{ default "" .Values.global.enableNetworkSegmentation | quote }}
         - name: OVN_ROUTE_ADVERTISEMENTS_ENABLE

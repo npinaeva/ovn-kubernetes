@@ -69,6 +69,10 @@ global:
   enableMulticast: ""
   # -- Configure to use multiple NetworkAttachmentDefinition CRD feature with ovn-kubernetes
   enableMultiNetwork: false
+  # -- Enable Kubernetes Dynamic Resource Allocation (DRA) host-device driver integration on ovnkube-node
+  enableDRA: false
+  # -- CEL expression used to filter network devices published by the DRA driver. Empty string disables filtering.
+  draFilter: ""
   # -- Configure to use user defined networks (UDN) feature with ovn-kubernetes
   enableNetworkSegmentation: false
   # -- Configure to enable cluster network connect feature with ovn-kubernetes

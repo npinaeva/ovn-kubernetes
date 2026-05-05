@@ -234,6 +234,10 @@ ovn_egressqos_enable=${OVN_EGRESSQOS_ENABLE:-false}
 ovn_egressservice_enable=${OVN_EGRESSSERVICE_ENABLE:-false}
 #OVN_MULTI_NETWORK_ENABLE - enable multiple network support for ovn-kubernetes
 ovn_multi_network_enable=${OVN_MULTI_NETWORK_ENABLE:-false}
+#OVN_DRA_ENABLE - enable Dynamic Resource Allocation (DRA) host-device driver in ovnkube-node
+ovn_dra_enable=${OVN_DRA_ENABLE:-false}
+#OVN_DRA_FILTER - CEL expression used to filter the network devices published by the DRA driver
+ovn_dra_filter=${OVN_DRA_FILTER:-}
 #OVN_NETWORK_SEGMENTATION_ENABLE - enable user defined primary networks for ovn-kubernetes
 ovn_network_segmentation_enable=${OVN_NETWORK_SEGMENTATION_ENABLE:=false}
 #OVN_NETWORK_CONNECT_ENABLE - enable network connect for ovn-kubernetes
@@ -1422,6 +1426,18 @@ ovnkube-controller-with-node() {
   fi
   echo "multi_network_enabled_flag=${multi_network_enabled_flag}"
 
+  dra_enabled_flag=
+  if [[ ${ovn_dra_enable} == "true" ]]; then
+	  dra_enabled_flag="--enable-dra"
+  fi
+  echo "dra_enabled_flag=${dra_enabled_flag}"
+
+  dra_filter_flag=()
+  if [[ -n ${ovn_dra_filter} ]]; then
+	  dra_filter_flag=("--dra-filter=${ovn_dra_filter}")
+  fi
+  echo "dra_filter_flag=${dra_filter_flag[*]}"
+
   network_segmentation_enabled_flag=
   if [[ ${ovn_network_segmentation_enable} == "true" ]]; then
 	  network_segmentation_enabled_flag="--enable-multi-network --enable-network-segmentation"
@@ -1757,6 +1773,8 @@ ovnkube-controller-with-node() {
     ${monitor_all} \
     ${multicast_enabled_flag} \
     ${multi_network_enabled_flag} \
+    ${dra_enabled_flag} \
+    "${dra_filter_flag[@]}" \
     ${network_segmentation_enabled_flag} \
     ${network_connect_enabled_flag} \
     ${pre_conf_udn_addr_enable_flag} \
@@ -2226,6 +2244,18 @@ ovn-node() {
 	  network_segmentation_enabled_flag="--enable-multi-network --enable-network-segmentation"
   fi
 
+  dra_enabled_flag=
+  if [[ ${ovn_dra_enable} == "true" ]]; then
+	  dra_enabled_flag="--enable-dra"
+  fi
+  echo "dra_enabled_flag=${dra_enabled_flag}"
+
+  dra_filter_flag=()
+  if [[ -n ${ovn_dra_filter} ]]; then
+	  dra_filter_flag=("--dra-filter=${ovn_dra_filter}")
+  fi
+  echo "dra_filter_flag=${dra_filter_flag[*]}"
+
   network_connect_enabled_flag=
   if [[ ${ovn_network_connect_enable} == "true" ]]; then
 	  network_connect_enabled_flag="--enable-network-connect"
@@ -2469,6 +2499,8 @@ ovn-node() {
         ${monitor_all} \
         ${multicast_enabled_flag} \
         ${multi_network_enabled_flag} \
+        ${dra_enabled_flag} \
+        "${dra_filter_flag[@]}" \
         ${network_segmentation_enabled_flag} \
         ${network_connect_enabled_flag} \
         ${pre_conf_udn_addr_enable_flag} \

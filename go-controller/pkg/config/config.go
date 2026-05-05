@@ -246,6 +246,7 @@ var (
 	// OvnKubeNode holds ovnkube-node parsed config file parameters and command-line overrides
 	OvnKubeNode = OvnKubeNodeConfig{
 		Mode:                      types.NodeModeFull,
+		EnableDRA:                 false,
 		DPUNodeLeaseRenewInterval: 10,
 		DPUNodeLeaseDuration:      40,
 		RoutingTableIDStart:       DefaultRoutingTableIDStart,
@@ -685,6 +686,8 @@ type HybridOverlayConfig struct {
 // OvnKubeNodeConfig holds ovnkube-node configurations
 type OvnKubeNodeConfig struct {
 	Mode                      string `gcfg:"mode"`
+	EnableDRA                 bool   `gcfg:"enable-dra"`
+	DRAFilter                 string `gcfg:"dra-filter"`
 	MgmtPortNetdev            string `gcfg:"mgmt-port-netdev"`
 	MgmtPortDPResourceName    string `gcfg:"mgmt-port-dp-resource-name"`
 	DPUNodeLeaseRenewInterval int    `gcfg:"dpu-node-lease-renew-interval"`
@@ -1805,6 +1808,21 @@ var OvnKubeNodeFlags = []cli.Flag{
 		Usage:       "ovnkube-node operating mode full (default), dpu, dpu-host",
 		Value:       OvnKubeNode.Mode,
 		Destination: &cliConfig.OvnKubeNode.Mode,
+	},
+	&cli.BoolFlag{
+		Name:        "enable-dra",
+		Usage:       "Enable Kubernetes Dynamic Resource Allocation (DRA) host-device driver integration on ovnkube-node.",
+		Value:       OvnKubeNode.EnableDRA,
+		Destination: &cliConfig.OvnKubeNode.EnableDRA,
+	},
+	&cli.StringFlag{
+		Name: "dra-filter",
+		Usage: "CEL expression used to filter the network devices published by the DRA driver. " +
+			"The variable 'attributes' is bound to the device's attribute map (map[string]v1.DeviceAttribute). " +
+			"Devices for which the expression evaluates to true are published; empty disables filtering. " +
+			"Example: !(\"k8s.ovn.org/type\" in attributes) || attributes[\"k8s.ovn.org/type\"].StringValue != \"veth\"",
+		Value:       OvnKubeNode.DRAFilter,
+		Destination: &cliConfig.OvnKubeNode.DRAFilter,
 	},
 	&cli.StringFlag{
 		Name: "ovnkube-node-mgmt-port-netdev",
