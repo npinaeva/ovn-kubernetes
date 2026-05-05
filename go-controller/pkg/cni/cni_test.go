@@ -78,8 +78,7 @@ func podRequestToHTTPRequest(pr *PodRequest) *http.Request {
 			"CNI_IFNAME":      pr.IfName,
 			"CNI_ARGS":        cniArgs,
 		},
-		Config:     confBytes,
-		DeviceInfo: pr.deviceInfo,
+		Config: confBytes,
 	}
 	body, err := json.Marshal(wireReq)
 	Expect(err).NotTo(HaveOccurred())

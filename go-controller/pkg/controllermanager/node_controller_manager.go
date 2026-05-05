@@ -11,8 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	v1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
-
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -319,7 +317,7 @@ func (ncm *NodeControllerManager) initDefaultNodeNetworkController(ctx context.C
 		if err != nil {
 			return err
 		}
-		netdevice, err := util.GetNetdevNameFromDeviceId(mgmtPortDetails.DeviceId, v1.DeviceInfo{})
+		netdevice, err := util.GetNetdevNameFromDeviceId(mgmtPortDetails.DeviceId)
 		if err != nil {
 			relErr := ncm.mpdm.ReleaseDeviceIDForNetwork(ovntypes.DefaultNetworkName)
 			if relErr != nil {

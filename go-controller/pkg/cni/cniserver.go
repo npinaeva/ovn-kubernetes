@@ -19,7 +19,6 @@ import (
 	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/gorilla/mux"
 	nadv1Listers "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/listers/k8s.cni.cncf.io/v1"
-	nadutils "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/utils"
 
 	"k8s.io/client-go/kubernetes"
 	corev1listers "k8s.io/client-go/listers/core/v1"
@@ -175,7 +174,6 @@ func cniRequestToPodRequest(cr *Request, ctx context.Context) (*PodRequest, erro
 		return nil, fmt.Errorf("broken stdin args")
 	}
 	req.CNIConf = conf
-	req.deviceInfo = cr.DeviceInfo
 
 	req.SandboxID, ok = cr.Env["CNI_CONTAINERID"]
 	if !ok {
@@ -420,17 +418,6 @@ func (s *Server) getPrimaryUDNPodRequest(originalPodRequest *PodRequest) (*PodRe
 				pod.Namespace, pod.Name, resourceName, err)
 		}
 		primaryPodRequest.CNIConf.DeviceID = deviceID
-		// Load device info if the device plugin wrote it. The file may not
-		// exist (e.g. when the device plugin has no NAD discovery configured),
-		// in which case GetNetdevNameFromDeviceId falls back to sysfs.
-		deviceInfo, err := nadutils.LoadDeviceInfoFromDP(resourceName, deviceID)
-		if err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("failed to load primary UDN's device info for pod %s/%s resource %s deviceID %s: %w",
-				pod.Namespace, pod.Name, resourceName, deviceID, err)
-		}
-		if deviceInfo != nil {
-			primaryPodRequest.deviceInfo = *deviceInfo
-		}
 	}
 	if err = updateDeviceInfo(primaryPodRequest); err != nil {
 		return nil, err

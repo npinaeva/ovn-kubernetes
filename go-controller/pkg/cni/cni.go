@@ -144,7 +144,7 @@ func (pr *PodRequest) cmdAdd(kubeAuth *KubeAPIAuth, clientset *ClientSet, ovsCli
 		var err error
 
 		if !pr.IsVFIO {
-			netdevName, err = util.GetNetdevNameFromDeviceId(pr.CNIConf.DeviceID, pr.deviceInfo)
+			netdevName, err = util.GetNetdevNameFromDeviceId(pr.CNIConf.DeviceID)
 			if err != nil {
 				return nil, fmt.Errorf("failed in cmdAdd while getting Netdevice name: %w", err)
 			}

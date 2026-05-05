@@ -182,9 +182,6 @@ type PodRequest struct {
 	// network attachment of multiple same secondary UDN, nadKey would be nadName for its first interface CNI request,
 	// and <nadName>/<index> (index starting from 1) for the subsequent interface CNI request
 	nadKey string
-
-	// the DeviceInfo struct
-	deviceInfo nadapi.DeviceInfo
 }
 
 type PodInfoGetter interface {

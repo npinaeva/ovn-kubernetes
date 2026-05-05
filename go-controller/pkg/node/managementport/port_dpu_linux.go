@@ -12,7 +12,6 @@ import (
 	"net"
 	"time"
 
-	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/vishvananda/netlink"
 
 	"k8s.io/klog/v2"
@@ -141,7 +140,7 @@ func (mp *managementPortNetdev) findNetdevByDeviceID() (netlink.Link, error) {
 		return nil, fmt.Errorf("no device ID available")
 	}
 
-	netdevName, err := util.GetNetdevNameFromDeviceId(mp.deviceID, nadapi.DeviceInfo{})
+	netdevName, err := util.GetNetdevNameFromDeviceId(mp.deviceID)
 	if err != nil {
 		return nil, fmt.Errorf("%w: device ID %s lookup failed: %v", errMgmtPortDeviceNotFound, mp.deviceID, err)
 	}

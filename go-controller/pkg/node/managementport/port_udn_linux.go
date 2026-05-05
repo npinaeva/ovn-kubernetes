@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net"
 
-	v1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
-
 	listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 
@@ -347,7 +345,7 @@ func (mp *udnManagementPortRep) delete() error {
 }
 
 func (mp *udnManagementPortNetdev) create() error {
-	netdevice, err := util.GetNetdevNameFromDeviceId(mp.deviceID, v1.DeviceInfo{})
+	netdevice, err := util.GetNetdevNameFromDeviceId(mp.deviceID)
 	if err != nil {
 		return fmt.Errorf("failed to get netdev name for device %s allocated for %s network: %v", mp.deviceID, mp.GetNetworkName(), err)
 	}
