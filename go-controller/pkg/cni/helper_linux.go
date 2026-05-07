@@ -384,12 +384,12 @@ func generateIfName(containerID string) string {
 }
 
 // Setup sriov interface in the pod
-func setupSriovInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInterfaceInfo, deviceID string, isVFIO bool) (*current.Interface, *current.Interface, error) {
+func setupSriovInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInterfaceInfo, deviceID string, isVFIO, isLegacySRIOV bool) (*current.Interface, *current.Interface, error) {
 	hostIface := &current.Interface{}
 	contIface := &current.Interface{}
 	netdevice := ifInfo.NetdevName
 
-	// 0. init contIface for VFIO
+	// init contIface for VFIO
 	if isVFIO {
 		if util.IsAuxDeviceName(deviceID) {
 			return nil, nil, fmt.Errorf("VFIO not supported for device %s", deviceID)
@@ -446,18 +446,24 @@ func setupSriovInterface(netns ns.NetNS, containerID, ifName string, ifInfo *Pod
 	}
 
 	if !ifInfo.IsDPUHostMode {
-		// 2. get device representor name
-		hostRepName, err := util.GetFunctionRepresentorName(deviceID)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		// 3. it's not possible to set mac address within container netns for VFIO case,
-		// hence set it through VF representor (PCI device IDs only).
-		if util.IsPCIDeviceName(deviceID) {
+		if isLegacySRIOV {
+			if err := util.SetVFHardwareAddressLegacy(deviceID, ifInfo.MAC); err != nil {
+				return nil, nil, fmt.Errorf("failed to set VF MAC on PF for %s: %v", deviceID, err)
+			}
+			// there is no host representor in this case, return empty hostIface
+			return hostIface, contIface, nil
+		} else if util.IsPCIDeviceName(deviceID) {
+			// it's not possible to set mac address within container netns for VFIO case,
+			// hence set it through VF representor (PCI device IDs only).
 			if err := util.SetVFHardwreAddress(deviceID, ifInfo.MAC); err != nil {
 				return nil, nil, err
 			}
+		}
+
+		// get device representor name
+		hostRepName, err := util.GetFunctionRepresentorName(deviceID)
+		if err != nil {
+			return nil, nil, err
 		}
 
 		hostIface.Name = hostRepName
@@ -706,7 +712,7 @@ func (*defaultPodRequestInterfaceOps) ConfigureInterface(pr *PodRequest, getter 
 	klog.V(5).Infof("CNI Conf %v", pr.CNIConf)
 	if pr.CNIConf.DeviceID != "" {
 		// SR-IOV Case
-		hostIface, contIface, err = setupSriovInterface(netns, pr.SandboxID, pr.IfName, ifInfo, pr.CNIConf.DeviceID, pr.IsVFIO)
+		hostIface, contIface, err = setupSriovInterface(netns, pr.SandboxID, pr.IfName, ifInfo, pr.CNIConf.DeviceID, pr.IsVFIO, pr.IsLegacySRIOV)
 	} else {
 		if ifInfo.IsDPUHostMode {
 			return nil, fmt.Errorf("unexpected configuration, pod request on dpu host. " +
@@ -720,7 +726,7 @@ func (*defaultPodRequestInterfaceOps) ConfigureInterface(pr *PodRequest, getter 
 		return nil, err
 	}
 
-	if !ifInfo.IsDPUHostMode {
+	if !ifInfo.IsDPUHostMode && !pr.IsLegacySRIOV {
 		err = ConfigureOVS(pr.ctx, pr.PodNamespace, pr.PodName, pr.IfName, hostIface.Name, ifInfo, pr.SandboxID, pr.CNIConf.DeviceID, pr.IsVFIO, getter)
 		if err != nil {
 			pr.deletePort(hostIface.Name, pr.PodNamespace, pr.PodName)
@@ -842,7 +848,16 @@ func (*defaultPodRequestInterfaceOps) UnconfigureInterface(pr *PodRequest, ifInf
 		}
 	}
 
-	if !ifInfo.IsDPUHostMode {
+	if pr.IsLegacySRIOV && pr.CNIConf.DeviceID != "" {
+		// Reset the PF VF-table MAC entry to zero so the next pod's CmdAdd
+		// finds the VF in the same permissive (pf_set_mac=false) state it had
+		// at boot.
+		if err := util.SetVFHardwareAddressLegacy(pr.CNIConf.DeviceID, net.HardwareAddr{0, 0, 0, 0, 0, 0}); err != nil {
+			klog.Errorf("Failed to reset VF MAC on PF for %s: %v", pr.CNIConf.DeviceID, err)
+		}
+	}
+
+	if !ifInfo.IsDPUHostMode && !pr.IsLegacySRIOV {
 		var err error
 		// host side interface deletion
 		var hostIfName string

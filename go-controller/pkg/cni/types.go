@@ -170,6 +170,10 @@ type PodRequest struct {
 	ctx context.Context
 	// if CNIConf.DeviceID is present, then captures if the VF is of type VFIO or not
 	IsVFIO bool
+	// if CNIConf.DeviceID is a PCI VF in legacy (non-switchdev) SR-IOV mode, the VF
+	// is moved into the pod and configured but not plumbed into OVS — there is no
+	// host-side representor to add to br-int.
+	IsLegacySRIOV bool
 
 	// network name, for default network, this will be ovncnitypes.DefaultNetworkName
 	netName string

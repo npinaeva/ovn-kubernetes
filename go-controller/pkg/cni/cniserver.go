@@ -236,6 +236,7 @@ func updateDeviceInfo(pr *PodRequest) error {
 	if util.IsPCIDeviceName(pr.CNIConf.DeviceID) {
 		// DeviceID is a PCI address
 		pr.IsVFIO = util.GetSriovnetOps().IsVfPciVfioBound(pr.CNIConf.DeviceID)
+		pr.IsLegacySRIOV = util.IsLegacyVFPCI(pr.CNIConf.DeviceID)
 	} else if util.IsAuxDeviceName(pr.CNIConf.DeviceID) {
 		// DeviceID is an Auxiliary device name - <driver_name>.<kind_of_a_type>.<id>
 		chunks := strings.Split(pr.CNIConf.DeviceID, ".")

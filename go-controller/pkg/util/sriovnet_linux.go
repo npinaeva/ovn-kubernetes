@@ -124,6 +124,56 @@ func (defaultSriovnetOps) GetPortIndexFromRepresentor(name string) (int, error) 
 	return sriovnet.GetPortIndexFromRepresentor(name)
 }
 
+// IsLegacyVFPCI reports whether a PCI VF is in legacy (non-switchdev) SR-IOV mode.
+// In legacy mode the PF has no uplink representor, so GetUplinkRepresentor fails.
+func IsLegacyVFPCI(deviceID string) bool {
+	if !IsPCIDeviceName(deviceID) {
+		return false
+	}
+	// The device must actually be a VF: a VF has a "physfn" symlink pointing to
+	// its parent PF, so GetPfPciFromVfPci succeeds. This excludes PFs and plain
+	// (non-SR-IOV) PCI NICs, which also lack an uplink representor but are not VFs.
+	if _, err := GetSriovnetOps().GetPfPciFromVfPci(deviceID); err != nil {
+		return false
+	}
+	uplink, err := GetSriovnetOps().GetUplinkRepresentor(deviceID)
+	return err != nil || uplink == ""
+}
+
+// GetPFNetdevForVF returns the parent PF's netdev name for a VF PCI address.
+// Works in both legacy and switchdev modes (unlike GetUplinkRepresentor, which
+// filters for switchdev port representors only).
+func GetPFNetdevForVF(vfPciAddress string) (string, error) {
+	pfNetDir := filepath.Join("/sys/bus/pci/devices", vfPciAddress, "physfn", "net")
+	entries, err := os.ReadDir(pfNetDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to list PF netdevs for VF %s: %v", vfPciAddress, err)
+	}
+	if len(entries) == 0 {
+		return "", fmt.Errorf("no PF netdev found for VF %s", vfPciAddress)
+	}
+	return entries[0].Name(), nil
+}
+
+// SetVFHardwareAddressLegacy sets the VF's MAC on the PF side for legacy SR-IOV.
+// SetVFHardwreAddress goes through GetUplinkRepresentor which fails in legacy
+// mode; this variant resolves the PF netdev via sysfs directly.
+func SetVFHardwareAddressLegacy(deviceID string, mac net.HardwareAddr) error {
+	pfName, err := GetPFNetdevForVF(deviceID)
+	if err != nil {
+		return err
+	}
+	pfLink, err := GetNetLinkOps().LinkByName(pfName)
+	if err != nil {
+		return fmt.Errorf("failed to look up PF netdev %s: %v", pfName, err)
+	}
+	vfIndex, err := GetSriovnetOps().GetVfIndexByPciAddress(deviceID)
+	if err != nil {
+		return err
+	}
+	return GetNetLinkOps().LinkSetVfHardwareAddr(pfLink, vfIndex, mac)
+}
+
 // GetFunctionRepresentorName returns representor name for passed device ID. Supported devices are Virtual Function
 // or Scalable Function
 func GetFunctionRepresentorName(deviceID string) (string, error) {

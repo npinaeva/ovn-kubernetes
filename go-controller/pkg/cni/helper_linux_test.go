@@ -1136,7 +1136,7 @@ func TestSetupSriovInterface(t *testing.T) {
 			runner = tc.runnerInstance
 
 			netNsDoError = nil
-			hostIface, contIface, err := setupSriovInterface(tc.inpNetNS, tc.inpContID, tc.inpIfaceName, tc.inpPodIfaceInfo, tc.inpPCIAddrs, false)
+			hostIface, contIface, err := setupSriovInterface(tc.inpNetNS, tc.inpContID, tc.inpIfaceName, tc.inpPodIfaceInfo, tc.inpPCIAddrs, false, false)
 			t.Log(hostIface, contIface, err)
 			if err == nil {
 				err = netNsDoError
