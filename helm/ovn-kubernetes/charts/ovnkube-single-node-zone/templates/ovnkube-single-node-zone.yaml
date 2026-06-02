@@ -270,6 +270,8 @@ spec:
           name: host-kubelet-plugins
         - mountPath: /var/lib/kubelet/plugins_registry
           name: host-kubelet-plugins-registry
+        - mountPath: /var/run/cdi
+          name: host-var-run-cdi
         - mountPath: /host-kubernetes
           name: host-kubeconfig
           readOnly: true
@@ -623,6 +625,10 @@ spec:
       - name: host-kubelet-plugins-registry
         hostPath:
           path: /var/lib/kubelet/plugins_registry
+      - name: host-var-run-cdi
+        hostPath:
+          path: /var/run/cdi
+          type: DirectoryOrCreate
       - name: host-kubeconfig
         hostPath:
           path: /etc/kubernetes/

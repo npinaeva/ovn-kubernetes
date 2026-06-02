@@ -33,14 +33,14 @@ const DeviceClassAnnotation = "k8s.ovn.org/deviceClass"
 func (d *NetworkDriver) PrepareResourceClaims(ctx context.Context, claims []*resourceapi.ResourceClaim) (map[types.UID]kubeletplugin.PrepareResult, error) {
 	results := make(map[types.UID]kubeletplugin.PrepareResult)
 	for _, claim := range claims {
-		err := d.prepareResourceClaim(ctx, claim)
+		cdiDevices, err := d.prepareResourceClaim(ctx, claim)
 		if err != nil {
 			results[claim.UID] = kubeletplugin.PrepareResult{Err: err}
 			continue
-		} else {
-			results[claim.UID] = kubeletplugin.PrepareResult{}
 		}
+		results[claim.UID] = kubeletplugin.PrepareResult{Devices: cdiDevices}
 	}
+	klog.Infof("DEBUG: Prepared claims: %+v", results)
 	return results, nil
 }
 
@@ -58,6 +58,16 @@ func (d *NetworkDriver) UnprepareResourceClaims(_ context.Context, claims []kube
 		result[claim.UID] = nil
 	}
 	d.sharedState.mu.Unlock()
+	// Best-effort: delete the per-claim CDI spec file if one was written
+	// during Prepare. RemoveSpec is idempotent — fine for claims that
+	// never had a VFIO device.
+	if d.cdi != nil {
+		for _, claim := range claims {
+			if err := d.cdi.DeleteClaimSpecFile(string(claim.UID)); err != nil {
+				klog.Errorf("DRA: failed to delete CDI spec for claim %s: %v", claim.UID, err)
+			}
+		}
+	}
 	return result, nil
 }
 
@@ -66,10 +76,10 @@ func (d *NetworkDriver) HandleError(_ context.Context, err error, msg string) {
 	runtime.HandleError(fmt.Errorf("%s: %w", msg, err))
 }
 
-func (d *NetworkDriver) prepareResourceClaim(_ context.Context, claim *resourceapi.ResourceClaim) error {
+func (d *NetworkDriver) prepareResourceClaim(_ context.Context, claim *resourceapi.ResourceClaim) ([]kubeletplugin.Device, error) {
 	klog.V(2).Infof("PrepareResourceClaim Claim %s/%s", claim.Namespace, claim.Name)
 	if claim.Status.Allocation == nil {
-		return nil
+		return nil, nil
 	}
 	podUIDs := []types.UID{}
 	for _, reserved := range claim.Status.ReservedFor {
@@ -80,6 +90,10 @@ func (d *NetworkDriver) prepareResourceClaim(_ context.Context, claim *resourcea
 		podUIDs = append(podUIDs, reserved.UID)
 	}
 
+	var (
+		cdiResultDevices []kubeletplugin.Device
+		vfioDevs         []claimVFIODevice
+	)
 	for _, result := range claim.Status.Allocation.Devices.Results {
 		if result.Driver != d.driverName {
 			continue
@@ -108,13 +122,13 @@ func (d *NetworkDriver) prepareResourceClaim(_ context.Context, claim *resourcea
 			}
 		}
 		if deviceClassName == "" {
-			return fmt.Errorf("device class name not found for claim %s/%s request %s", claim.Namespace, claim.Name, result.Request)
+			return nil, fmt.Errorf("device class name not found for claim %s/%s request %s", claim.Namespace, claim.Name, result.Request)
 		}
 		if len(podUIDs) == 0 {
-			return fmt.Errorf("no pod reference found for claim %s/%s", claim.Namespace, claim.Name)
+			return nil, fmt.Errorf("no pod reference found for claim %s/%s", claim.Namespace, claim.Name)
 		}
 		if len(podUIDs) > 1 {
-			return fmt.Errorf("multiple pod references found for claim %s/%s: %v", claim.Namespace, claim.Name, podUIDs)
+			return nil, fmt.Errorf("multiple pod references found for claim %s/%s: %v", claim.Namespace, claim.Name, podUIDs)
 		}
 		klog.Infof("DEBUG: Allocating device %s of class %s for claim %s/%s to pod UID %s", result.Device, deviceClassName, claim.Namespace, claim.Name, podUIDs[0])
 		// If the device's interface mapping was already written to
@@ -141,9 +155,40 @@ func (d *NetworkDriver) prepareResourceClaim(_ context.Context, claim *resourcea
 			IfaceName:   ifaceName,
 		}
 		d.claimToPodUID[claim.UID] = podUIDs[0]
+		deviceAttrs := d.sharedState.DeviceAttributes[result.Device]
 		d.sharedState.mu.Unlock()
+
+		isVFIO := deviceAttrs[AttrDriver] == "vfio-pci"
+		// Only VFIO needs CDI device injection: kernel netdev VFs are
+		// surfaced inside the pod via the CNI/OVS path, no /dev/* files
+		// to mount. Anything else returns no CDI device IDs.
+		if !isVFIO {
+			continue
+		}
+		vfioDevs = append(vfioDevs, claimVFIODevice{
+			DeviceName: result.Device,
+			PCIAddress: deviceAttrs[AttrPCIAddress],
+			IOMMUGroup: deviceAttrs[AttrIOMMUGroup],
+		})
+		cdiResultDevices = append(cdiResultDevices, kubeletplugin.Device{
+			Requests:   []string{result.Request},
+			PoolName:   d.nodeName,
+			DeviceName: result.Device,
+			// write it now: if file creation fails, we return error and empty result anyway
+			CDIDeviceIDs: d.cdi.GetClaimDevices(string(claim.UID), []string{result.Device}),
+		})
+		klog.Infof("DEBUG: CDI result %+v", cdiResultDevices)
 	}
-	return nil
+
+	// Write the per-claim CDI spec once, then stitch the CDI IDs back
+	// onto each device result. GetClaimDevices includes the common
+	// device first so every container picks up the driver-wide env vars.
+	if len(vfioDevs) > 0 && d.cdi != nil {
+		if err := d.cdi.CreateClaimSpecFile(string(claim.UID), vfioDevs); err != nil {
+			return nil, fmt.Errorf("write per-claim CDI spec for %s: %w", claim.UID, err)
+		}
+	}
+	return cdiResultDevices, nil
 }
 
 func (d *NetworkDriver) publishResources(ctx context.Context) {

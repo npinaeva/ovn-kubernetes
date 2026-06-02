@@ -81,6 +81,8 @@ spec:
           # We mount our socket here
         - mountPath: /var/run/ovn-kubernetes
           name: host-var-run-ovn-kubernetes
+        - mountPath: /var/run/cdi
+          name: host-var-run-cdi
         # CNI related mounts which we take over
         - mountPath: /opt/cni/bin
           name: host-opt-cni-bin
@@ -273,6 +275,10 @@ spec:
       - name: host-var-run-ovn-kubernetes
         hostPath:
           path: /var/run/ovn-kubernetes
+      - name: host-var-run-cdi
+        hostPath:
+          path: /var/run/cdi
+          type: DirectoryOrCreate
       - name: host-opt-cni-bin
         hostPath:
           path: /opt/cni/bin

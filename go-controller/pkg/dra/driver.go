@@ -107,6 +107,7 @@ type NetworkDriver struct {
 
 	sharedState   *SharedState
 	claimToPodUID map[types.UID]types.UID
+	cdi           *CDIHandler
 }
 
 // New creates a DRA controller for a node. filterProgram (optional, nil to
@@ -137,6 +138,15 @@ func (d *NetworkDriver) Start(ctx context.Context) error {
 	if err := os.MkdirAll(driverPluginPath, 0o750); err != nil {
 		return fmt.Errorf("failed to create plugin path %s: %w", driverPluginPath, err)
 	}
+
+	cdi, err := NewCDIHandler(CDISpecDir, d.driverName, cdiClass)
+	if err != nil {
+		return fmt.Errorf("init CDI handler: %w", err)
+	}
+	//if err := cdi.CreateCommonSpecFile(); err != nil {
+	//	return fmt.Errorf("write common CDI spec: %w", err)
+	//}
+	d.cdi = cdi
 
 	kubeletOptions := []kubeletplugin.Option{
 		kubeletplugin.DriverName(d.driverName),
@@ -192,7 +202,9 @@ func (d *NetworkDriver) reconcileExistingClaims(ctx context.Context) error {
 		if !fromThisNode {
 			continue
 		}
-		if err := d.prepareResourceClaim(ctx, claim); err != nil {
+		// CDI device IDs returned here are discarded.
+		// We just want the SharedState rebuilt so CNI lookups work for running pods.
+		if _, err := d.prepareResourceClaim(ctx, claim); err != nil {
 			klog.Errorf("Reconciling existing ResourceClaim %s/%s failed: %v", claim.Namespace, claim.Name, err)
 			continue
 		}
