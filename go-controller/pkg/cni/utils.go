@@ -193,8 +193,8 @@ func GetCNINADKey(pod *corev1.Pod, ifName, nadName string) (string, error) {
 			return util.GetIndexedNADKey(nadName, idx), nil
 		}
 	}
-	return "", fmt.Errorf("failed to find NAD key associated with CNI request for pod %s/%s with ifName %s",
-		pod.Namespace, pod.Name, ifName)
+	return "", fmt.Errorf("failed to find NAD key associated with CNI request for pod %s/%s with ifName %s for nad %s",
+		pod.Namespace, pod.Name, ifName, nadName)
 }
 
 // START taken from https://github.com/kubernetes/kubernetes/blob/master/pkg/kubelet/types/pod_update.go

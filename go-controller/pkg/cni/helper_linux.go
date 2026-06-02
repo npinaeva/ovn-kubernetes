@@ -404,34 +404,34 @@ func setupSriovInterface(netns ns.NetNS, containerID, ifName string, ifInfo *Pod
 		if len(netdevice) != 0 {
 			newNetdevName, err := safeMoveIfToNetns(netdevice, netns, containerID)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, fmt.Errorf("failed to move netdevice %s to container netns: %v", netdevice, err)
 			}
 			err = netns.Do(func(_ ns.NetNS) error {
 				contIface.Name = ifName
 				err = renameLink(newNetdevName, contIface.Name)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to rename %s to %s: %v", newNetdevName, contIface.Name, err)
 				}
 				link, err := util.GetNetLinkOps().LinkByName(contIface.Name)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to lookup %s: %v", contIface.Name, err)
 				}
 				err = util.GetNetLinkOps().LinkSetHardwareAddr(link, ifInfo.MAC)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to set MAC address for %s: %v", contIface.Name, err)
 				}
 				err = util.GetNetLinkOps().LinkSetMTU(link, ifInfo.MTU)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to set MTU %v for %s: %v", ifInfo.MTU, contIface.Name, err)
 				}
 				err = util.GetNetLinkOps().LinkSetUp(link)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to set UP for %s: %v", contIface.Name, err)
 				}
 
 				err = setupNetwork(link, ifInfo)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to setup VFIO: %v", err)
 				}
 
 				contIface.Mac = ifInfo.MAC.String()

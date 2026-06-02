@@ -195,10 +195,11 @@ type ClientSet struct {
 	nadLister nadv1Listers.NetworkAttachmentDefinitionLister
 }
 
-func NewClientSet(kclient kubernetes.Interface, podLister corev1listers.PodLister) *ClientSet {
+func NewClientSet(kclient kubernetes.Interface, podLister corev1listers.PodLister, nadLister nadv1Listers.NetworkAttachmentDefinitionLister) *ClientSet {
 	return &ClientSet{
 		kclient:   kclient,
 		podLister: podLister,
+		nadLister: nadLister,
 	}
 }
 
