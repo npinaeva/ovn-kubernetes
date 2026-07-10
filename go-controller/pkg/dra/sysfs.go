@@ -1,0 +1,215 @@
+/*
+Copyright The Kubernetes Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package dra
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"k8s.io/klog/v2"
+)
+
+const (
+	// https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-class-net
+	sysnetPath = "/sys/class/net/"
+	// PCI device root in sysfs.
+	sysBusPciPath = "/sys/bus/pci/devices"
+)
+
+// pciDriverName returns the kernel driver bound to the PCI device at the
+// given BDF, or "" if the device is unbound. Matches the approach used by
+// sriov-network-device-plugin's utils.GetDriverName.
+func pciDriverName(pciAddr string) string {
+	target, err := os.Readlink(filepath.Join(sysBusPciPath, pciAddr, "driver"))
+	if err != nil {
+		return ""
+	}
+	return filepath.Base(target)
+}
+
+// pciIOMMUGroup returns the IOMMU group ID for a PCI device, or (-1, err)
+// if the device has no iommu_group symlink (no IOMMU active for it). The
+// VFIO character device file is /dev/vfio/<group>.
+func pciIOMMUGroup(pciAddr string) (int, error) {
+	target, err := filepath.EvalSymlinks(filepath.Join(sysBusPciPath, pciAddr, "iommu_group"))
+	if err != nil {
+		return -1, err
+	}
+	groupID, err := strconv.Atoi(filepath.Base(target))
+	if err != nil {
+		return -1, fmt.Errorf("parse iommu_group basename %q: %w", filepath.Base(target), err)
+	}
+	return groupID, nil
+}
+
+// pciIOMMUGroupIsNoIOMMU returns true if the given IOMMU group is a
+// vfio-noiommu placeholder group (kernel parameter
+// vfio.enable_unsafe_noiommu_mode=1). The host VFIO character device for
+// such groups lives at /dev/vfio/noiommu-<N>, not /dev/vfio/<N>.
+func pciIOMMUGroupIsNoIOMMU(groupID int) bool {
+	name, err := os.ReadFile(fmt.Sprintf("/sys/kernel/iommu_groups/%d/name", groupID))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(name)) == "vfio-noiommu"
+}
+
+// pciAddressRegex is used to identify a PCI address within a string.
+// It matches patterns like "0000:00:04.0" or "00:04.0".
+var pciAddressRegex = regexp.MustCompile(`^(?:([0-9a-fA-F]{4}):)?([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-9a-fA-F])$`)
+
+func realpath(ifName string, syspath string) string {
+	linkPath := filepath.Join(syspath, ifName)
+	dst, err := os.Readlink(linkPath)
+	if err != nil {
+		klog.Error(err, "unexpected error trying reading link", "link", linkPath)
+	}
+	var dstAbs string
+	if filepath.IsAbs(dst) {
+		dstAbs = dst
+	} else {
+		// Symlink targets are relative to the directory containing the link.
+		dstAbs = filepath.Join(filepath.Dir(linkPath), dst)
+	}
+	return dstAbs
+}
+
+func sriovTotalVFs(name string) int {
+	totalVfsPath := filepath.Join(sysnetPath, name, "/device/sriov_totalvfs")
+	totalBytes, err := os.ReadFile(totalVfsPath)
+	if err != nil {
+		klog.V(7).Infof("error trying to get total VFs for device %s: %v", name, err)
+		return 0
+	}
+	total := bytes.TrimSpace(totalBytes)
+	t, err := strconv.Atoi(string(total))
+	if err != nil {
+		klog.Errorf("Error in obtaining maximum supported number of virtual functions for network interface: %s: %v", name, err)
+		return 0
+	}
+	return t
+}
+
+func sriovNumVFs(name string) int {
+	numVfsPath := filepath.Join(sysnetPath, name, "/device/sriov_numvfs")
+	numBytes, err := os.ReadFile(numVfsPath)
+	if err != nil {
+		klog.V(7).Infof("error trying to get number of VFs for device %s: %v", name, err)
+		return 0
+	}
+	num := bytes.TrimSpace(numBytes)
+	t, err := strconv.Atoi(string(num))
+	if err != nil {
+		klog.Errorf("Error in obtaining number of virtual functions for network interface: %s: %v", name, err)
+		return 0
+	}
+	return t
+}
+
+// isSriovVf reports whether a network interface is a SR-IOV Virtual Function.
+// In sysfs this is exposed as a "physfn" symlink under the PCI device.
+func isSriovVf(name string, syspath string) bool {
+	physfnPath := filepath.Join(syspath, name, "device", "physfn")
+	info, err := os.Lstat(physfnPath)
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeSymlink != 0
+}
+
+// pciAddress BDF Notation
+// [domain:]bus:device.function
+// https://wiki.xenproject.org/wiki/Bus:Device.Function_(BDF)_Notation
+type pciAddress struct {
+	// There might be several independent sets of PCI devices
+	// (e.g. several host PCI controllers on a mainboard chipset)
+	domain string
+	bus    string
+	device string
+	// One PCI device (e.g. pluggable card) may implement several functions
+	// (e.g. sound card and joystick controller used to be a common combo),
+	// so PCI provides for up to 8 separate functions on a single PCI device.
+	function string
+}
+
+func (a pciAddress) String() string {
+	if a.domain == "" {
+		return fmt.Sprintf("%s:%s.%s", a.bus, a.device, a.function)
+	}
+	return fmt.Sprintf("%s:%s:%s.%s", a.domain, a.bus, a.device, a.function)
+}
+
+// parsePCIAddress takes a string and attempts to extract and parse a PCI address from it.
+func parsePCIAddress(s string) (*pciAddress, error) {
+	matches := pciAddressRegex.FindStringSubmatch(s)
+	if matches == nil {
+		return nil, fmt.Errorf("could not find PCI address in string: %s", s)
+	}
+	address := &pciAddress{}
+
+	// When pciAddressRegex matches, it is expected to return 5 elements. (First
+	// is the complete matched string itself, and the next 4 are the submatches
+	// corresponding to Domain:Bus:Device.Function). Examples:
+	// 	- "0000:00:04.0" -> ["0000:00:04.0" "0000" "00" "04" "0"]
+	// 	- "00:05.0" -> ["0000:00:05.0" "" "00" "05" "0"]
+	if len(matches) == 5 {
+		address.domain = matches[1]
+		address.bus = matches[2]
+		address.device = matches[3]
+		address.function = matches[4]
+	} else {
+		return nil, fmt.Errorf("invalid PCI address format: %s", s)
+	}
+
+	return address, nil
+}
+
+// pciAddressFromPath takes a full sysfs path and traverses it upwards to find
+// the first component that contains a valid PCI address.
+func pciAddressFromPath(path string) (*pciAddress, error) {
+	parts := strings.Split(path, "/")
+	for len(parts) > 0 {
+		current := parts[len(parts)-1]
+		addr, err := parsePCIAddress(current)
+		if err == nil {
+			return addr, nil
+		}
+		parts = parts[:len(parts)-1]
+	}
+	return nil, fmt.Errorf("could not find PCI address in path: %s", path)
+}
+
+// pciAddressForNetInterface finds the PCI address for a given network interface name.
+func pciAddressForNetInterface(ifName string) (*pciAddress, error) {
+	// First, find the absolute path of the device in the sysfs, which typically
+	// looks like:
+	// /sys/devices/pci0000:8c/0000:8c:00.0/0000:8d:00.0/0000:8e:02.0/0000:91:00.0/net/eth0
+	// Then, use pciAddressFromPath() to traverse the path upwards, checking
+	// each component to find the first one that matches the format of a PCI
+	// address.
+	sysfsPath := realpath(ifName, sysnetPath)
+	address, err := pciAddressFromPath(sysfsPath)
+	if err != nil {
+		return nil, fmt.Errorf("could not find PCI address for interface %q: %w", ifName, err)
+	}
+	return address, nil
+}

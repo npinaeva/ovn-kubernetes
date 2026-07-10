@@ -34,6 +34,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni"
 	config "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
 	adminpolicybasedrouteclientset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1/apis/clientset/versioned"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/dra"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/informer"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/kube"
@@ -134,6 +135,7 @@ type DefaultNodeNetworkController struct {
 	apbExternalRouteNodeController *apbroute.ExternalGatewayNodeController
 
 	cniServer *cni.Server
+	draDriver *dra.NetworkDriver
 
 	udnHostIsolationManager *UDNHostIsolationManager
 
@@ -868,7 +870,16 @@ func (nc *DefaultNodeNetworkController) Init(ctx context.Context) error {
 		if nc.dpuNodeLeaseManager != nil {
 			dpuHealth = nc.dpuNodeLeaseManager
 		}
-		cniServer, err = cni.NewCNIServer(nc.watchFactory, kclient.KClient, nc.networkManager, nc.ovsClient, dpuHealth)
+		var draState dra.DRAState
+		if config.OvnKubeNode.EnableDRA {
+			filterProgram, err := dra.Compile(config.OvnKubeNode.DRAFilter)
+			if err != nil {
+				return fmt.Errorf("failed to compile DRA filter %q: %w", config.OvnKubeNode.DRAFilter, err)
+			}
+			nc.draDriver = dra.New(nc.name, kclient.KClient, filterProgram)
+			draState = nc.draDriver.GetDRAState()
+		}
+		cniServer, err = cni.NewCNIServer(nc.watchFactory, kclient.KClient, nc.networkManager, nc.ovsClient, dpuHealth, draState)
 		if err != nil {
 			return err
 		}
@@ -1122,6 +1133,12 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 			return err
 		}
 	} else {
+		if nc.draDriver != nil {
+			if err := nc.draDriver.Start(ctx); err != nil {
+				return fmt.Errorf("failed to start DRA driver: %w", err)
+			}
+		}
+
 		// start the cni server
 		if nc.cniServer != nil {
 			if err := nc.cniServer.Start(cni.ServerRunDir); err != nil {
@@ -1195,6 +1212,9 @@ func (nc *DefaultNodeNetworkController) Stop() {
 	if nc.stopChan == nil {
 		klog.Infof("Default node network controller is already stopped")
 		return
+	}
+	if nc.draDriver != nil {
+		nc.draDriver.Stop()
 	}
 	close(nc.stopChan)
 	nc.stopChan = nil

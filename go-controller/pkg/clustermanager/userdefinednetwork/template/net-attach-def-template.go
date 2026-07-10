@@ -18,6 +18,7 @@ import (
 	ovncnitypes "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
 	userdefinednetworkv1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/userdefinednetwork/v1"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/dra"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -119,7 +120,8 @@ func renderNADAnnotations(obj client.Object) map[string]string {
 	udnAnnotations := obj.GetAnnotations()
 	annotations := make(map[string]string)
 	for k, v := range udnAnnotations {
-		if !strings.HasPrefix(k, types.OvnK8sPrefix) {
+		// propagate deviceClass annotation, but not the other ovn-k annotations
+		if k == dra.DeviceClassAnnotation || !strings.HasPrefix(k, types.OvnK8sPrefix) {
 			annotations[k] = v
 		}
 	}

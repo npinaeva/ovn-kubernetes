@@ -120,7 +120,7 @@ func TestCNIServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to call newOVSClientWithExternalIDs: %v", err)
 	}
-	s, err := NewCNIServer(wf, fakeClient, networkmanager.Default().Interface(), ovsClient, nil)
+	s, err := NewCNIServer(wf, fakeClient, networkmanager.Default().Interface(), ovsClient, nil, nil)
 	if err != nil {
 		t.Fatalf("error creating CNI server: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestCNIServerStatusNotReady(t *testing.T) {
 		t.Fatalf("failed to call newOVSClientWithExternalIDs: %v", err)
 	}
 	dpuHealth := &fakeDPUHealth{ready: false, reason: "lease expired"}
-	s, err := NewCNIServer(wf, fakeClient, networkmanager.Default().Interface(), ovsClient, dpuHealth)
+	s, err := NewCNIServer(wf, fakeClient, networkmanager.Default().Interface(), ovsClient, dpuHealth, nil)
 	if err != nil {
 		t.Fatalf("error creating CNI server: %v", err)
 	}

@@ -233,14 +233,13 @@ func (pr *PodRequest) cmdDel(clientset *ClientSet) (*Response, error) {
 		}
 	}
 
-	if pod != nil && pr.netName != types.DefaultNetworkName {
+	// nadKey is only set for default network and primary UDN
+	if pod != nil && pr.nadKey == "" {
 		nadKey, err := GetCNINADKey(pod, pr.IfName, pr.nadName)
 		if err != nil {
 			return nil, err
 		}
 		pr.nadKey = nadKey
-	} else {
-		pr.nadKey = pr.nadName
 	}
 
 	netdevName := ""

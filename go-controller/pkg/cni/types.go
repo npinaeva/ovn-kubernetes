@@ -21,6 +21,7 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/client"
 
 	ovncnitypes "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni/types"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/dra"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/networkmanager"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -221,4 +222,5 @@ type Server struct {
 	networkManager networkmanager.Interface
 	ovsClient      client.Client
 	dpuHealth      DPUStatusProvider
+	draState       dra.DRAState
 }

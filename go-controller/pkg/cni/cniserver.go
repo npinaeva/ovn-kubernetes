@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -20,6 +20,8 @@ import (
 	"github.com/gorilla/mux"
 	nadv1Listers "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/listers/k8s.cni.cncf.io/v1"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	resourceapply "k8s.io/client-go/applyconfigurations/resource/v1"
 	"k8s.io/client-go/kubernetes"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
@@ -30,6 +32,7 @@ import (
 	ovncnitypes "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni/udn"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/dra"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/networkmanager"
@@ -72,6 +75,7 @@ func NewCNIServer(
 	networkManager networkmanager.Interface,
 	ovsClient client.Client,
 	dpuHealth DPUStatusProvider,
+	draState dra.DRAState,
 ) (*Server, error) {
 	var nadLister nadv1Listers.NetworkAttachmentDefinitionLister
 
@@ -81,7 +85,7 @@ func NewCNIServer(
 
 	router := mux.NewRouter()
 
-	if util.IsNetworkSegmentationSupportEnabled() {
+	if config.OVNKubernetesFeature.EnableMultiNetwork {
 		nadLister = factory.NADInformer().Lister()
 	}
 	s := &Server{
@@ -102,6 +106,7 @@ func NewCNIServer(
 		networkManager: networkManager,
 		ovsClient:      ovsClient,
 		dpuHealth:      dpuHealth,
+		draState:       draState,
 	}
 
 	if len(config.Kubernetes.CAData) > 0 {
@@ -111,6 +116,13 @@ func NewCNIServer(
 	router.NotFoundHandler = http.HandlerFunc(http.NotFound)
 	router.HandleFunc("/metrics", s.handleCNIMetrics).Methods("POST")
 	router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				klog.Errorf("cniserver panic on %s %s: %v\n%s",
+					r.Method, r.URL.Path, rec, debug.Stack())
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
 		result, err := s.handleCNIRequest(r)
 		if err != nil {
 			var cniErr *cnitypes.Error
@@ -174,6 +186,7 @@ func cniRequestToPodRequest(cr *Request, ctx context.Context) (*PodRequest, erro
 		return nil, fmt.Errorf("broken stdin args")
 	}
 	req.CNIConf = conf
+	klog.Infof("DEBUG: CNI config for pod request: %+v", req.CNIConf)
 
 	req.SandboxID, ok = cr.Env["CNI_CONTAINERID"]
 	if !ok {
@@ -218,6 +231,7 @@ func cniRequestToPodRequest(cr *Request, ctx context.Context) (*PodRequest, erro
 	req.netName = conf.Name
 	if req.netName == types.DefaultNetworkName {
 		req.nadName = types.DefaultNetworkName
+		// when default network is setup via multus using a nad, nadKey may actually be different
 		req.nadKey = types.DefaultNetworkName
 	} else {
 		req.nadName = conf.NADName
@@ -233,6 +247,7 @@ func updateDeviceInfo(pr *PodRequest) error {
 	if pr.CNIConf.DeviceID == "" {
 		return nil
 	}
+	klog.Infof("DEBUG: isPCI %t, isVFIO %v deviceID %q", util.IsPCIDeviceName(pr.CNIConf.DeviceID), util.GetSriovnetOps().IsVfPciVfioBound(pr.CNIConf.DeviceID), pr.CNIConf.DeviceID)
 	if util.IsPCIDeviceName(pr.CNIConf.DeviceID) {
 		// DeviceID is a PCI address
 		pr.IsVFIO = util.GetSriovnetOps().IsVfPciVfioBound(pr.CNIConf.DeviceID)
@@ -247,6 +262,120 @@ func updateDeviceInfo(pr *PodRequest) error {
 			return fmt.Errorf("only SF auxiliary devices are supported, device name %q is not supported", pr.CNIConf.DeviceID)
 		}
 	} // else it is a netdev name, which is used for simulated DPU environments.
+	return nil
+}
+
+func (s *Server) setDeviceInfo(req *PodRequest) (err error) {
+	defer func() {
+		if err == nil {
+			// this is needed for deviceID coming from anywhere
+			err = updateDeviceInfo(req)
+		}
+	}()
+	if req.CNIConf.DeviceID != "" {
+		// already set by multus
+		return
+	}
+	if req.CNIConf.NADName == "" || req.CNIConf.NADName == types.DefaultNetworkName {
+		return nil
+	}
+	// this is not always the same as req.nadName, because default network overrides the real nadName coming from multus.
+	// So in case when default network is accelerated we need to look at the actual CNI config to find nad name
+	fullNADName := req.CNIConf.NADName
+	if req.Command == CNIAdd {
+		nadNamespace, nadName, err := cache.SplitMetaNamespaceKey(fullNADName)
+		if err != nil {
+			return fmt.Errorf("invalid NAD name %s", nadNamespace)
+		}
+		nad, err := s.clientSet.nadLister.NetworkAttachmentDefinitions(nadNamespace).Get(nadName)
+		if err != nil {
+			return fmt.Errorf("failed to get primary UDN's network-attachment-definition %s: %v", nadName, err)
+		}
+		// if both DeviceClassAnnotation and resourceNameAnnot are present, resourceNameAnnot wins as the old way
+		resourceName := nad.Annotations[resourceNameAnnot]
+		if resourceName != "" {
+			// primary UDN with resourceName specified
+			pod, err := s.clientSet.getPod(req.PodNamespace, req.PodName)
+			if err != nil {
+				return fmt.Errorf("failed to get pod %s/%s: %v", req.PodNamespace, req.PodName, err)
+			}
+			deviceID, err := udn.GetPodPrimaryUDNDeviceID(pod, resourceName)
+			if err != nil {
+				return fmt.Errorf("failed to get primary UDN device ID for pod %s/%s resource %s: %v",
+					pod.Namespace, pod.Name, resourceName, err)
+			}
+			req.CNIConf.DeviceID = deviceID
+			return nil
+		}
+		deviceClass := nad.Annotations[dra.DeviceClassAnnotation]
+		if deviceClass != "" {
+			// DRA based allocation
+			devices, _ := s.draState.GetAllocatedDevices(req.PodUID)
+			for deviceName, device := range devices {
+				if device.DeviceClass == deviceClass && (device.IfaceName == "" || device.IfaceName == req.IfName) {
+					deviceAttrs, _ := s.draState.GetDeviceAttributes(deviceName)
+					req.CNIConf.DeviceID = deviceAttrs[dra.AttrPCIAddress]
+					if err := s.updateClaimStatus(req.ctx, deviceName, device, req.IfName, req.PodNamespace, req.PodUID); err != nil {
+						klog.Errorf("DRA: failed to update ResourceClaim status: %v", err)
+					}
+					return nil
+				}
+			}
+			return fmt.Errorf("failed to find allocated device for pod %s/%s NAD %s DeviceClass %s", req.PodNamespace, req.PodName, fullNADName, deviceClass)
+		}
+	} else {
+		// CNI DEL is only supported for DRA and not for primary UDN
+		devices, _ := s.draState.GetAllocatedDevices(req.PodUID)
+		for deviceName, device := range devices {
+			if device.IfaceName == req.IfName {
+				deviceAttrs, _ := s.draState.GetDeviceAttributes(deviceName)
+				klog.Infof("DEBUG: found device %s for pod %s/%s NAD %s to release", deviceName, req.PodNamespace, req.PodName, fullNADName)
+				req.CNIConf.DeviceID = deviceAttrs[dra.AttrPCIAddress]
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+// updateClaimStatus writes back the (deviceName → ifaceName) mapping for a DRA
+// allocation onto its ResourceClaim's status via server-side apply, and
+// updates the in-memory DRA state. The claim's namespace equals the pod's
+// namespace; its name is carried on the AllocatedDevice as ClaimName.
+func (s *Server) updateClaimStatus(ctx context.Context, deviceName string, device *dra.AllocatedDevice, ifaceName, podNamespace, podUID string) error {
+	if device.IfaceName == ifaceName {
+		return nil
+	}
+	if device.ClaimName == "" {
+		return fmt.Errorf("missing claim name for allocated device %s (pod uid %s)", deviceName, podUID)
+	}
+	deviceStatus := resourceapply.
+		AllocatedDeviceStatus().
+		WithDevice(deviceName).
+		WithDriver(dra.DriverName).
+		WithPool(s.draState.NodeName()).
+		WithNetworkData(resourceapply.NetworkDeviceData().WithInterfaceName(ifaceName))
+	resourceClaimApply := resourceapply.
+		ResourceClaim(device.ClaimName, podNamespace).
+		WithStatus(resourceapply.ResourceClaimStatus().WithDevices(deviceStatus))
+
+	_, err := s.clientSet.kclient.ResourceV1().ResourceClaims(podNamespace).ApplyStatus(ctx,
+		resourceClaimApply,
+		metav1.ApplyOptions{
+			// since devices from the same claim are handled by different CNI requests, it gets very
+			// complicated to store and merge all device status for the same claim.
+			// Instead, we are using different field manager for each device, so that they can update the claim status
+			// independently without overwriting each other's changes.
+			FieldManager: dra.DriverName + "/" + deviceName,
+			Force:        true,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update ResourceClaim status for claim %s/%s: %v", podNamespace, device.ClaimName, err)
+	}
+
+	device.IfaceName = ifaceName
+	s.draState.UpdateAllocatedDevice(podUID, deviceName, device)
 	return nil
 }
 
@@ -307,6 +436,10 @@ func (s *Server) handleCNIRequest(r *http.Request) (result []byte, err error) {
 			}
 		}
 	}()
+	if err = s.setDeviceInfo(request); err != nil {
+		klog.Infof("DEBUG: error setting DRA device info for pod %s/%s NAD %s: %v", request.PodNamespace, request.PodName, request.nadName, err)
+		return nil, err
+	}
 
 	klog.Infof("%s %s starting CNI request", request, request.Command)
 	switch request.Command {
@@ -327,11 +460,17 @@ func (s *Server) handleCNIRequest(r *http.Request) (result []byte, err error) {
 	if request.Command == CNIAdd {
 		// We don't do anything extra for CNIDel, because UnconfigureInterface already deletes all ports
 		// for a given pod from OVS, also some other cleanup are done in batch in cmdDel
+		// TODO on primary UDN del VF MAC won't be reset
 		primaryPodRequest, err := s.getPrimaryUDNPodRequest(request)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get primary UDN pod request: %v", err)
 		}
 		if primaryPodRequest != nil {
+			klog.Infof("DEBUG: primary UDN podRequest for pod %s/%s NAD %s: %#v", request.PodNamespace, request.PodName, request.nadName, primaryPodRequest)
+			if err = s.setDeviceInfo(primaryPodRequest); err != nil {
+				klog.Infof("DEBUG: error setting DRA device info for pod %s/%s NAD %s: %v", request.PodNamespace, request.PodName, request.nadName, err)
+				return nil, err
+			}
 			klog.V(4).Infof("Pod %s/%s primaryUDN podRequest %v", primaryPodRequest.PodNamespace, primaryPodRequest.PodName, primaryPodRequest)
 			primaryResponse, err := primaryPodRequest.cmdAdd(s.kubeAuth, s.clientSet, s.ovsClient)
 			if err != nil {
@@ -392,7 +531,8 @@ func (s *Server) getPrimaryUDNPodRequest(originalPodRequest *PodRequest) (*PodRe
 		CNIConf: &ovncnitypes.NetConf{
 			// primary UDN MTU will be taken from config.Default.MTU
 			// if not specified at the NAD
-			MTU: activeNetwork.MTU(),
+			MTU:     activeNetwork.MTU(),
+			NADName: primaryNADKey,
 		},
 		netName: activeNetwork.GetNetworkName(),
 		nadName: primaryNADKey,
@@ -419,9 +559,6 @@ func (s *Server) getPrimaryUDNPodRequest(originalPodRequest *PodRequest) (*PodRe
 				pod.Namespace, pod.Name, resourceName, err)
 		}
 		primaryPodRequest.CNIConf.DeviceID = deviceID
-	}
-	if err = updateDeviceInfo(primaryPodRequest); err != nil {
-		return nil, err
 	}
 	return primaryPodRequest, nil
 }
