@@ -387,6 +387,9 @@ github.com/mitchellh/reflectwalk
 ## explicit; go 1.13
 github.com/moby/spdystream
 github.com/moby/spdystream/spdy
+# github.com/moby/sys/capability v0.4.0
+## explicit; go 1.21
+github.com/moby/sys/capability
 # github.com/moby/sys/userns v0.1.0
 ## explicit; go 1.21
 github.com/moby/sys/userns
@@ -439,6 +442,14 @@ github.com/onsi/gomega/matchers/support/goraph/edge
 github.com/onsi/gomega/matchers/support/goraph/node
 github.com/onsi/gomega/matchers/support/goraph/util
 github.com/onsi/gomega/types
+# github.com/opencontainers/runtime-spec v1.3.0
+## explicit
+github.com/opencontainers/runtime-spec/specs-go
+# github.com/opencontainers/runtime-tools v0.9.1-0.20251114084447-edf4cb3d2116
+## explicit; go 1.21
+github.com/opencontainers/runtime-tools/generate
+github.com/opencontainers/runtime-tools/generate/seccomp
+github.com/opencontainers/runtime-tools/validate/capabilities
 # github.com/openshift/api v0.0.0-20260311143357-f6ee4c095675
 ## explicit; go 1.25.0
 github.com/openshift/api/cloudnetwork/v1
@@ -1560,6 +1571,15 @@ sigs.k8s.io/structured-merge-diff/v6/value
 # sigs.k8s.io/yaml v1.6.0
 ## explicit; go 1.22
 sigs.k8s.io/yaml
+# tags.cncf.io/container-device-interface v1.1.0
+## explicit; go 1.21
+tags.cncf.io/container-device-interface/internal/validation
+tags.cncf.io/container-device-interface/internal/validation/k8s
+tags.cncf.io/container-device-interface/pkg/cdi
+tags.cncf.io/container-device-interface/pkg/parser
+# tags.cncf.io/container-device-interface/specs-go v1.1.0
+## explicit; go 1.19
+tags.cncf.io/container-device-interface/specs-go
 # github.com/Microsoft/hcsshim => github.com/Microsoft/hcsshim v0.8.20
 # github.com/coreos/go-iptables => github.com/trozet/go-iptables v0.0.0-20240328221912-077e672b3808
 # github.com/gogo/protobuf => github.com/gogo/protobuf v1.3.2
