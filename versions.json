@@ -7,6 +7,11 @@
     ]
   },
   {
+    "version": "master",
+    "title": "Master (Dev)",
+    "aliases": []
+  },
+  {
     "version": "ci-1.0",
     "title": "ci-1.0 (Stable)",
     "aliases": []
