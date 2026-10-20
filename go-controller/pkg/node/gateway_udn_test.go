@@ -22,6 +22,7 @@ import (
 	"github.com/containernetworking/plugins/pkg/testutils"
 	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	nadfake "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake"
+	frrfake "github.com/metallb/frr-k8s/pkg/client/clientset/versioned/fake"
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/mock"
 	"github.com/vishvananda/netlink"
@@ -41,7 +42,6 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
-	rafakeclient "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1/apis/clientset/versioned/fake"
 	uplinkv1alpha1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/uplink/v1alpha1"
 	uplinkfake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/uplink/v1alpha1/apis/clientset/versioned/fake"
 	uplinkinformerfactory "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/uplink/v1alpha1/apis/informers/externalversions"
@@ -2321,11 +2321,11 @@ var _ = Describe("UserDefinedNetworkGateway", func() {
 			},
 		)
 		fakeClient := &util.OVNNodeClientset{
-			KubeClient:                kubeFakeClient,
-			NetworkAttchDefClient:     nadfake.NewSimpleClientset(),
-			UplinkClient:              uplinkfake.NewSimpleClientset(),
-			UserDefinedNetworkClient:  udnfakeclient.NewSimpleClientset(),
-			RouteAdvertisementsClient: rafakeclient.NewSimpleClientset(),
+			KubeClient:               kubeFakeClient,
+			NetworkAttchDefClient:    nadfake.NewSimpleClientset(),
+			UplinkClient:             uplinkfake.NewSimpleClientset(),
+			UserDefinedNetworkClient: udnfakeclient.NewSimpleClientset(),
+			FRRClient:                frrfake.NewSimpleClientset(),
 		}
 
 		stop := make(chan struct{})

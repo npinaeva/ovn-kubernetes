@@ -11,6 +11,7 @@ import (
 	"time"
 
 	nadfake "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake"
+	frrfake "github.com/metallb/frr-k8s/pkg/client/clientset/versioned/fake"
 	"github.com/stretchr/testify/mock"
 	"github.com/vishvananda/netlink"
 
@@ -28,7 +29,6 @@ import (
 	adminpolicybasedroutefake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1/apis/clientset/versioned/fake"
 	egressipfake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/clientset/versioned/fake"
 	egressservicefake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressservice/v1/apis/clientset/versioned/fake"
-	routeadvertisementsfake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1/apis/clientset/versioned/fake"
 	uplinkfake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/uplink/v1alpha1/apis/clientset/versioned/fake"
 	udnfake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/userdefinednetwork/v1/apis/clientset/versioned/fake"
 	vtepv1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/vtep/v1"
@@ -812,15 +812,15 @@ var _ = Describe("EVPN node controller", func() {
 
 			var err error
 			wf, err = factory.NewNodeWatchFactory(&util.OVNNodeClientset{
-				KubeClient:                kubeClient,
-				EgressServiceClient:       egressservicefake.NewClientset(),
-				EgressIPClient:            egressipfake.NewClientset(),
-				AdminPolicyRouteClient:    adminpolicybasedroutefake.NewClientset(),
-				NetworkAttchDefClient:     nadfake.NewSimpleClientset(),
-				UserDefinedNetworkClient:  udnfake.NewClientset(),
-				RouteAdvertisementsClient: routeadvertisementsfake.NewClientset(),
-				UplinkClient:              uplinkfake.NewSimpleClientset(),
-				VTEPClient:                vtepClient,
+				KubeClient:               kubeClient,
+				EgressServiceClient:      egressservicefake.NewClientset(),
+				EgressIPClient:           egressipfake.NewClientset(),
+				AdminPolicyRouteClient:   adminpolicybasedroutefake.NewClientset(),
+				NetworkAttchDefClient:    nadfake.NewSimpleClientset(),
+				UserDefinedNetworkClient: udnfake.NewClientset(),
+				FRRClient:                frrfake.NewSimpleClientset(),
+				UplinkClient:             uplinkfake.NewSimpleClientset(),
+				VTEPClient:               vtepClient,
 			}, nodeName)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(wf.Start()).To(Succeed())

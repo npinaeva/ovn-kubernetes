@@ -9,15 +9,17 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
 	nadlisters "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/listers/k8s.cni.cncf.io/v1"
+	frrtypes "github.com/metallb/frr-k8s/api/v1beta1"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
@@ -25,8 +27,6 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/controller"
-	ratypes "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1"
-	ralisters "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1/apis/listers/routeadvertisements/v1"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -65,32 +65,30 @@ func newNetworkController(name, node string, cm ControllerManager, wf watchFacto
 		networkConfig,
 	)
 
-	// we don't care about route advertisements in cluster manager
-	if nc.hasRouteAdvertisements() {
+	// Both node agents use their local FRR configurations to program the datapath.
+	if node != "" && util.IsRouteAdvertisementsEnabled() {
 		nc.nadLister = wf.NADInformer().Lister()
-		nc.raLister = wf.RouteAdvertisementsInformer().Lister()
 		nc.nodeLister = wf.NodeCoreInformer().Lister()
-
-		// ra controller
-		raConfig := &controller.ControllerConfig[ratypes.RouteAdvertisements]{
+		nc.frrIndexer = wf.FRRConfigurationsInformer().Informer().GetIndexer()
+		nc.frrController = controller.NewController(nc.name+" FRR", &controller.ControllerConfig[frrtypes.FRRConfiguration]{
 			RateLimiter:    workqueue.DefaultTypedControllerRateLimiter[string](),
-			Informer:       wf.RouteAdvertisementsInformer().Informer(),
-			Lister:         nc.raLister.List,
+			Informer:       wf.FRRConfigurationsInformer().Informer(),
+			Lister:         wf.FRRConfigurationsInformer().Lister().List,
 			Reconcile:      func(_ context.Context, _ string) error { return nc.syncRunningNetworks() },
-			ObjNeedsUpdate: raNeedsUpdate,
+			ObjNeedsUpdate: frrNeedsUpdate,
 			Threadiness:    1,
-		}
-		nc.raController = controller.NewController(
-			nc.name,
-			raConfig,
-		)
+		})
 
-		// node controller
 		nodeConfig := &controller.ControllerConfig[corev1.Node]{
-			RateLimiter:    workqueue.DefaultTypedControllerRateLimiter[string](),
-			Informer:       wf.NodeCoreInformer().Informer(),
-			Lister:         nc.nodeLister.List,
-			Reconcile:      func(_ context.Context, _ string) error { return nc.syncRunningNetworks() },
+			RateLimiter: workqueue.DefaultTypedControllerRateLimiter[string](),
+			Informer:    wf.NodeCoreInformer().Informer(),
+			Lister:      nc.nodeLister.List,
+			Reconcile: func(_ context.Context, nodeName string) error {
+				if nodeName != node {
+					return nil
+				}
+				return nc.syncRunningNetworks()
+			},
 			ObjNeedsUpdate: nodeNeedsUpdate,
 			Threadiness:    1,
 		}
@@ -123,12 +121,12 @@ type networkController struct {
 	// are ready before node setup continues.
 	asyncNetworkStart bool
 
-	nadLister  nadlisters.NetworkAttachmentDefinitionLister
-	raLister   ralisters.RouteAdvertisementsLister
-	nodeLister corelisters.NodeLister
+	nadLister     nadlisters.NetworkAttachmentDefinitionLister
+	nodeLister    corelisters.NodeLister
+	frrIndexer    cache.Indexer
+	frrController controller.Controller
 
 	networkReconciler controller.Reconciler
-	raController      controller.Controller
 	nodeController    controller.Controller
 
 	cm                 ControllerManager
@@ -156,8 +154,8 @@ type networkController struct {
 // EnsuredNetwork before this call
 func (c *networkController) Start() error {
 	controllers := []controller.Reconciler{c.networkReconciler}
-	if c.raController != nil {
-		controllers = append(controllers, c.raController)
+	if c.frrController != nil {
+		controllers = append(controllers, c.frrController)
 	}
 	if c.nodeController != nil {
 		controllers = append(controllers, c.nodeController)
@@ -170,8 +168,8 @@ func (c *networkController) Start() error {
 
 func (c *networkController) Stop() {
 	controllers := []controller.Reconciler{c.networkReconciler}
-	if c.raController != nil {
-		controllers = append(controllers, c.raController)
+	if c.frrController != nil {
+		controllers = append(controllers, c.frrController)
 	}
 	if c.nodeController != nil {
 		controllers = append(controllers, c.nodeController)
@@ -447,10 +445,9 @@ func (c *networkController) syncNetwork(ctx context.Context, network string) err
 		have = nil
 	}
 
-	// fetch other relevant network information
-	err := c.gatherNetwork(want, have)
+	err := c.setAdvertisements(want)
 	if err != nil {
-		return fmt.Errorf("failed to fetch other network information for network %s: %w", network, err)
+		return fmt.Errorf("failed to determine route advertisements for network %s: %w", network, err)
 	}
 
 	ensureNetwork := !compatible || util.DoesNetworkNeedReconciliation(have, want)
@@ -545,25 +542,16 @@ func (c *networkController) deleteNetwork(ctx context.Context, network string) e
 	return nil
 }
 
-func (c *networkController) gatherNetwork(network util.MutableNetInfo, current util.NetInfo) error {
-	if network == nil {
+func (c *networkController) setAdvertisements(network util.MutableNetInfo) error {
+	if c.frrController == nil || network == nil || (!network.IsDefault() && !network.IsPrimaryNetwork()) {
 		return nil
-	}
-	return c.setAdvertisements(network, current)
-}
-
-func (c *networkController) setAdvertisements(network util.MutableNetInfo, current util.NetInfo) error {
-	if !network.IsDefault() && !network.IsPrimaryNetwork() {
-		return nil
-	}
-	if !c.hasRouteAdvertisements() {
-		return nil
-	}
-	if c.getNADKeysForNetwork == nil {
-		return fmt.Errorf("missing NAD resolver for network %q", network.GetNetworkName())
 	}
 
-	raNames := sets.New[string]()
+	// Cluster manager records on the NADs what each applied RA asks for. An
+	// entry only changes once a new state is applied, so an RA that is being
+	// edited, rejected or deleted keeps its last applied intent until then.
+	intents := map[string]util.RouteAdvertisementsIntent{}
+	conflicts := sets.New[string]()
 	for _, nadNamespacedName := range c.getNADKeysForNetwork(network.GetNetworkName()) {
 		namespace, name, err := cache.SplitMetaNamespaceKey(nadNamespacedName)
 		if err != nil {
@@ -575,143 +563,70 @@ func (c *networkController) setAdvertisements(network util.MutableNetInfo, curre
 			return err
 		}
 
-		var nadRANames []string
-		if nad.Annotations[types.OvnRouteAdvertisementsKey] != "" {
-			err = json.Unmarshal([]byte(nad.Annotations[types.OvnRouteAdvertisementsKey]), &nadRANames)
-			if err != nil {
-				return err
+		if nad.Annotations[types.OvnRouteAdvertisementsIntentKey] == "" {
+			continue
+		}
+		var nadIntents map[string]util.RouteAdvertisementsIntent
+		if err := json.Unmarshal([]byte(nad.Annotations[types.OvnRouteAdvertisementsIntentKey]), &nadIntents); err != nil {
+			return err
+		}
+		for raName, intent := range nadIntents {
+			current, seen := intents[raName]
+			switch {
+			case !seen || (current.UID == "" && intent.UID != ""):
+				// A versioned copy supersedes any disagreements between older,
+				// unversioned annotations during an upgrade.
+				intents[raName] = intent
+				conflicts.Delete(raName)
+			case current.UID == intent.UID:
+				if intent.Generation > current.Generation {
+					intents[raName] = intent
+				} else if current.UID == "" && current != intent {
+					conflicts.Insert(raName)
+				}
+			case intent.UID != "":
+				// After a delete and recreate, the old RA can have the higher
+				// generation. Wait for its NAD copies to disappear.
+				conflicts.Insert(raName)
 			}
 		}
-
-		raNames.Insert(nadRANames...)
 	}
 
 	podAdvertisements := map[string][]string{}
 	eipAdvertisements := map[string][]string{}
-	for raName := range raNames {
-		ra, err := c.raLister.Get(raName)
-		if apierrors.IsNotFound(err) {
-			// A stale NAD annotation should not prevent a network controller
-			// from starting. Preserve the current advertised state until the
-			// RouteAdvertisements controller removes the stale annotation.
-			preserveAdvertisements(network, current)
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-
-		advertisements := sets.New(ra.Spec.Advertisements...)
-		if !advertisements.Has(ratypes.PodNetwork) {
-			continue
-		}
-
-		accepted := meta.FindStatusCondition(ra.Status.Conditions, "Accepted")
-		if accepted == nil {
-			// if there is no status we can safely ignore
-			continue
-		}
-		if accepted.Status != metav1.ConditionTrue || accepted.ObservedGeneration != ra.Generation {
-			// The RA is not accepted yet (e.g. a brand-new network whose
-			// subnets haven't been allocated). Don't abort here: starting the
-			// controller is what lets the node allocator assign subnets, which
-			// is in turn what lets the RA become accepted - aborting would
-			// deadlock the two. Keep the previously-advertised VRFs (empty for
-			// a new network) for now; the RA's later transition to Accepted
-			// re-triggers this sync and fills in the real VRFs.
-			preserveAdvertisements(network, current)
-			return nil
-		}
-
-		nodeSelector, err := metav1.LabelSelectorAsSelector(&ra.Spec.NodeSelector)
-		if err != nil {
-			return err
-		}
-
-		nodes, err := c.nodeLister.List(nodeSelector)
-		if err != nil {
-			return err
-		}
-
-		vrf := ra.Spec.TargetVRF
-		if vrf == "" {
-			vrf = types.DefaultNetworkName
-		}
-
-		for _, node := range nodes {
-			if !c.isNodeManaged(node) {
+	node, err := c.nodeLister.Get(c.node)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	if node != nil {
+		for raName, intent := range intents {
+			if conflicts.Has(raName) {
 				continue
 			}
-			if advertisements.Has(ratypes.PodNetwork) {
-				podAdvertisements[node.Name] = append(podAdvertisements[node.Name], vrf)
+			// No-overlay and EVPN keep their routing domain while the node
+			// is degraded. Only overlay can fall back to normal external SNAT.
+			if network.Transport() != types.NetworkTransportNoOverlay && network.Transport() != types.NetworkTransportEVPN {
+				ready, err := c.nodeAdvertisementsReady(raName, intent, network, node)
+				if err != nil {
+					return err
+				}
+				if !ready {
+					continue
+				}
 			}
-			if advertisements.Has(ratypes.EgressIP) {
-				eipAdvertisements[node.Name] = append(eipAdvertisements[node.Name], vrf)
+			vrf := intent.TargetVRF
+			if vrf == "" {
+				vrf = types.DefaultNetworkName
+			}
+			podAdvertisements[c.node] = append(podAdvertisements[c.node], vrf)
+			if intent.EgressIP {
+				eipAdvertisements[c.node] = append(eipAdvertisements[c.node], vrf)
 			}
 		}
 	}
 	network.SetPodNetworkAdvertisedVRFs(podAdvertisements)
 	network.SetEgressIPAdvertisedVRFs(eipAdvertisements)
 	return nil
-}
-
-// preserveAdvertisements carries the currently-advertised VRFs over to the
-// network being synced, so a missing or not-yet-accepted RouteAdvertisements
-// neither blocks the controller from starting nor clears existing advertisement
-// state. For a brand-new network, current is nil and the advertised VRFs are
-// left empty.
-func preserveAdvertisements(network util.MutableNetInfo, current util.NetInfo) {
-	if current == nil {
-		return
-	}
-	network.SetPodNetworkAdvertisedVRFs(current.GetPodNetworkAdvertisedVRFs())
-	network.SetEgressIPAdvertisedVRFs(current.GetEgressIPAdvertisedVRFs())
-}
-
-func (c *networkController) hasRouteAdvertisements() bool {
-	return util.IsRouteAdvertisementsEnabled()
-}
-
-func (c *networkController) isNodeManaged(node *corev1.Node) bool {
-	if c.node == "" {
-		// cluster manager manages all nodes
-		return true
-	}
-	// ovnkube-node only manages its own node.
-	return node.Name == c.node
-}
-
-func raNeedsUpdate(oldRA, newRA *ratypes.RouteAdvertisements) bool {
-	if oldRA == nil || newRA == nil {
-		// handle RA add/delete through the NAD annotation update
-		return false
-	}
-
-	// don't process resync or objects that are marked for deletion
-	if oldRA.ResourceVersion == newRA.ResourceVersion ||
-		!newRA.GetDeletionTimestamp().IsZero() {
-		return false
-	}
-
-	// the RA needs to be accepted on its current generation, otherwise we
-	// commit to no change
-	newCondition := meta.FindStatusCondition(newRA.Status.Conditions, "Accepted")
-	if newCondition == nil {
-		return false
-	}
-	if newCondition.Status != metav1.ConditionTrue {
-		return false
-	}
-	if newCondition.ObservedGeneration != newRA.Generation {
-		return false
-	}
-	// there had to be a change on observed generation or status, otherwise we
-	// already processed this RA in its current form
-	oldCondition := meta.FindStatusCondition(oldRA.Status.Conditions, "Accepted")
-	if oldCondition == nil {
-		return true
-	}
-	return oldCondition.ObservedGeneration != newCondition.ObservedGeneration || oldCondition.Status != newCondition.Status
 }
 
 func nodeNeedsUpdate(oldNode, newNode *corev1.Node) bool {
@@ -725,7 +640,7 @@ func nodeNeedsUpdate(oldNode, newNode *corev1.Node) bool {
 		return false
 	}
 
-	return !reflect.DeepEqual(oldNode.Labels, newNode.Labels)
+	return !reflect.DeepEqual(oldNode.Labels, newNode.Labels) || oldNode.Annotations[types.NodeSubnetsAnnotation] != newNode.Annotations[types.NodeSubnetsAnnotation]
 }
 
 func (c *networkController) getRunningNetwork(id int) string {
@@ -752,4 +667,47 @@ func (c *networkController) GetNetworkByID(id int) util.NetInfo {
 		return c.networks[name]
 	}
 	return nil
+}
+
+// FRR merges configurations on the node. IPv4 and IPv6 can use different
+// peering templates, so each current pod prefix needs an export in the
+// intended VRF somewhere among this RA's generated configurations.
+func (c *networkController) nodeAdvertisementsReady(raName string, intent util.RouteAdvertisementsIntent, network util.NetInfo, node *corev1.Node) (bool, error) {
+	configs, err := c.frrIndexer.ByIndex(types.OvnRouteAdvertisementsKey, raName)
+	if err != nil {
+		return false, fmt.Errorf("failed to look up FRRConfigurations for RouteAdvertisements %q on node %q: %w", raName, node.Name, err)
+	}
+	prefixes, err := util.GetRouteAdvertisementsPodPrefixes(network, node)
+	if err != nil {
+		// This network's node prefixes are not ready yet.
+		return false, nil
+	}
+	vrf := intent.ResolvedVRF(network)
+	for _, obj := range configs {
+		cfg := obj.(*frrtypes.FRRConfiguration)
+		if !cfg.DeletionTimestamp.IsZero() {
+			continue
+		}
+		selector, err := metav1.LabelSelectorAsSelector(&cfg.Spec.NodeSelector)
+		if err != nil || !selector.Matches(labels.Set(node.Labels)) {
+			continue
+		}
+		prefixes = slices.DeleteFunc(prefixes, func(prefix string) bool {
+			return util.RouteAdvertisementsConfigurationExportsPrefix(cfg, vrf, prefix)
+		})
+		if len(prefixes) == 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func frrNeedsUpdate(old, new *frrtypes.FRRConfiguration) bool {
+	if old != nil && new != nil && reflect.DeepEqual(old.Labels, new.Labels) && reflect.DeepEqual(old.Spec, new.Spec) &&
+		reflect.DeepEqual(old.DeletionTimestamp, new.DeletionTimestamp) {
+		return false
+	}
+	// The informer already filters objects to this node.
+	return (old != nil && old.Labels[types.OvnRouteAdvertisementsKey] != "") ||
+		(new != nil && new.Labels[types.OvnRouteAdvertisementsKey] != "")
 }

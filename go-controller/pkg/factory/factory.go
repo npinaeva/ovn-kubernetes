@@ -533,7 +533,6 @@ func NewOVNKubeControllerWatchFactory(ovnClientset *util.OVNKubeControllerClient
 		if err != nil {
 			return nil, err
 		}
-
 	}
 
 	if util.IsNetworkSegmentationSupportEnabled() {
@@ -580,9 +579,13 @@ func NewOVNKubeControllerWatchFactory(ovnClientset *util.OVNKubeControllerClient
 	}
 
 	if util.IsRouteAdvertisementsEnabled() {
-		wf.raFactory = routeadvertisementsinformerfactory.NewSharedInformerFactory(ovnClientset.RouteAdvertisementsClient, resyncInterval)
-		// make sure shared informer is created for a factory, so on wf.raFactory.Start() it is initialized and caches are synced.
-		wf.raFactory.K8s().V1().RouteAdvertisements().Informer()
+		wf.frrFactory = frrinformerfactory.NewSharedInformerFactoryWithOptions(ovnClientset.FRRClient, resyncInterval,
+			frrinformerfactory.WithTweakListOptions(func(options *metav1.ListOptions) {
+				options.LabelSelector = labels.Set{types.OvnRouteAdvertisementsNodeKey: util.RouteAdvertisementsNodeLabel(nodeName)}.String()
+			}))
+		if err := addRouteAdvertisementsIndex(wf.FRRConfigurationsInformer().Informer()); err != nil {
+			return nil, err
+		}
 	}
 
 	if config.OVNKubernetesFeature.EnableNetworkQoS {
@@ -926,9 +929,13 @@ func NewNodeWatchFactory(ovnClientset *util.OVNNodeClientset, nodeName string) (
 	}
 
 	if util.IsRouteAdvertisementsEnabled() {
-		wf.raFactory = routeadvertisementsinformerfactory.NewSharedInformerFactory(ovnClientset.RouteAdvertisementsClient, resyncInterval)
-		// make sure shared informer is created for a factory, so on wf.raFactory.Start() it is initialized and caches are synced.
-		wf.raFactory.K8s().V1().RouteAdvertisements().Informer()
+		wf.frrFactory = frrinformerfactory.NewSharedInformerFactoryWithOptions(ovnClientset.FRRClient, resyncInterval,
+			frrinformerfactory.WithTweakListOptions(func(options *metav1.ListOptions) {
+				options.LabelSelector = labels.Set{types.OvnRouteAdvertisementsNodeKey: util.RouteAdvertisementsNodeLabel(nodeName)}.String()
+			}))
+		if err := addRouteAdvertisementsIndex(wf.FRRConfigurationsInformer().Informer()); err != nil {
+			return nil, err
+		}
 	}
 
 	if util.IsEVPNEnabled() {
@@ -2097,4 +2104,20 @@ func getEndpointSliceSelector() func(options *metav1.ListOptions) {
 		endpointSliceSelector = noHeadlessServiceSelector()
 	}
 	return endpointSliceSelector
+}
+
+// The node watch already filters by node. Index its local configurations by RA.
+func addRouteAdvertisementsIndex(informer cache.SharedIndexInformer) error {
+	err := informer.AddIndexers(cache.Indexers{types.OvnRouteAdvertisementsKey: func(obj interface{}) ([]string, error) {
+		cfg := obj.(*frrapi.FRRConfiguration)
+		ra := cfg.Labels[types.OvnRouteAdvertisementsKey]
+		if ra == "" {
+			return nil, nil
+		}
+		return []string{ra}, nil
+	}})
+	if err != nil {
+		return fmt.Errorf("failed to add RouteAdvertisements index to FRRConfiguration informer: %w", err)
+	}
+	return nil
 }

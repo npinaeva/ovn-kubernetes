@@ -7,6 +7,7 @@ import (
 	"context"
 
 	nadinformer "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions/k8s.cni.cncf.io/v1"
+	frrinformer "github.com/metallb/frr-k8s/pkg/client/informers/externalversions/api/v1beta1"
 
 	corev1 "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
@@ -17,7 +18,6 @@ import (
 	adminpolicybasedrouteinformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1/apis/informers/externalversions/adminpolicybasedroute/v1"
 	networkconnectinformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/clusternetworkconnect/v1/apis/informers/externalversions/clusternetworkconnect/v1"
 	egressipinformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/informers/externalversions/egressip/v1"
-	routeadvertisementsinformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1/apis/informers/externalversions/routeadvertisements/v1"
 	uplinkinformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/uplink/v1alpha1/apis/informers/externalversions/uplink/v1alpha1"
 	userdefinednetworkinformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/userdefinednetwork/v1/apis/informers/externalversions/userdefinednetwork/v1"
 	vtepinformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/vtep/v1/apis/informers/externalversions/vtep/v1"
@@ -75,7 +75,7 @@ type NodeWatchFactory interface {
 	ClusterUserDefinedNetworkInformer() userdefinednetworkinformer.ClusterUserDefinedNetworkInformer
 	UplinkInformer() uplinkinformer.UplinkInformer
 	UplinkStateInformer() uplinkinformer.UplinkStateInformer
-	RouteAdvertisementsInformer() routeadvertisementsinformer.RouteAdvertisementsInformer
+	FRRConfigurationsInformer() frrinformer.FRRConfigurationInformer
 	VTEPInformer() vtepinformer.VTEPInformer
 
 	GetPods(namespace string) ([]*corev1.Pod, error)

@@ -86,35 +86,35 @@ type OVNClientset struct {
 
 // OVNKubeControllerClientset
 type OVNKubeControllerClientset struct {
-	KubeClient                kubernetes.Interface
-	ANPClient                 anpclientset.Interface
-	EgressIPClient            egressipclientset.Interface
-	EgressFirewallClient      egressfirewallclientset.Interface
-	OCPNetworkClient          ocpnetworkclientset.Interface
-	EgressQoSClient           egressqosclientset.Interface
-	MultiNetworkPolicyClient  multinetworkpolicyclientset.Interface
-	EgressServiceClient       egressserviceclientset.Interface
-	AdminPolicyRouteClient    adminpolicybasedrouteclientset.Interface
-	IPAMClaimsClient          ipamclaimssclientset.Interface
-	NetworkAttchDefClient     networkattchmentdefclientset.Interface
-	UserDefinedNetworkClient  userdefinednetworkclientset.Interface
-	RouteAdvertisementsClient routeadvertisementsclientset.Interface
-	NetworkQoSClient          networkqosclientset.Interface
-	NetworkConnectClient      networkconnectclientset.Interface
-	UplinkClient              uplinkclientset.Interface
-	VTEPClient                vtepclientset.Interface
+	KubeClient               kubernetes.Interface
+	ANPClient                anpclientset.Interface
+	EgressIPClient           egressipclientset.Interface
+	EgressFirewallClient     egressfirewallclientset.Interface
+	OCPNetworkClient         ocpnetworkclientset.Interface
+	EgressQoSClient          egressqosclientset.Interface
+	MultiNetworkPolicyClient multinetworkpolicyclientset.Interface
+	EgressServiceClient      egressserviceclientset.Interface
+	AdminPolicyRouteClient   adminpolicybasedrouteclientset.Interface
+	IPAMClaimsClient         ipamclaimssclientset.Interface
+	NetworkAttchDefClient    networkattchmentdefclientset.Interface
+	UserDefinedNetworkClient userdefinednetworkclientset.Interface
+	NetworkQoSClient         networkqosclientset.Interface
+	NetworkConnectClient     networkconnectclientset.Interface
+	UplinkClient             uplinkclientset.Interface
+	VTEPClient               vtepclientset.Interface
+	FRRClient                frrclientset.Interface
 }
 
 type OVNNodeClientset struct {
-	KubeClient                kubernetes.Interface
-	EgressServiceClient       egressserviceclientset.Interface
-	EgressIPClient            egressipclientset.Interface
-	AdminPolicyRouteClient    adminpolicybasedrouteclientset.Interface
-	NetworkAttchDefClient     networkattchmentdefclientset.Interface
-	UserDefinedNetworkClient  userdefinednetworkclientset.Interface
-	RouteAdvertisementsClient routeadvertisementsclientset.Interface
-	UplinkClient              uplinkclientset.Interface
-	VTEPClient                vtepclientset.Interface
+	KubeClient               kubernetes.Interface
+	EgressServiceClient      egressserviceclientset.Interface
+	EgressIPClient           egressipclientset.Interface
+	AdminPolicyRouteClient   adminpolicybasedrouteclientset.Interface
+	NetworkAttchDefClient    networkattchmentdefclientset.Interface
+	UserDefinedNetworkClient userdefinednetworkclientset.Interface
+	UplinkClient             uplinkclientset.Interface
+	VTEPClient               vtepclientset.Interface
+	FRRClient                frrclientset.Interface
 }
 
 type OVNClusterManagerClientset struct {
@@ -150,23 +150,23 @@ var (
 
 func (cs *OVNClientset) GetOVNKubeControllerClientset() *OVNKubeControllerClientset {
 	return &OVNKubeControllerClientset{
-		KubeClient:                cs.KubeClient,
-		ANPClient:                 cs.ANPClient,
-		EgressIPClient:            cs.EgressIPClient,
-		EgressFirewallClient:      cs.EgressFirewallClient,
-		OCPNetworkClient:          cs.OCPNetworkClient,
-		EgressQoSClient:           cs.EgressQoSClient,
-		MultiNetworkPolicyClient:  cs.MultiNetworkPolicyClient,
-		EgressServiceClient:       cs.EgressServiceClient,
-		AdminPolicyRouteClient:    cs.AdminPolicyRouteClient,
-		IPAMClaimsClient:          cs.IPAMClaimsClient,
-		NetworkAttchDefClient:     cs.NetworkAttchDefClient,
-		UserDefinedNetworkClient:  cs.UserDefinedNetworkClient,
-		RouteAdvertisementsClient: cs.RouteAdvertisementsClient,
-		NetworkQoSClient:          cs.NetworkQoSClient,
-		NetworkConnectClient:      cs.NetworkConnectClient,
-		UplinkClient:              cs.UplinkClient,
-		VTEPClient:                cs.VTEPClient,
+		KubeClient:               cs.KubeClient,
+		ANPClient:                cs.ANPClient,
+		EgressIPClient:           cs.EgressIPClient,
+		EgressFirewallClient:     cs.EgressFirewallClient,
+		OCPNetworkClient:         cs.OCPNetworkClient,
+		EgressQoSClient:          cs.EgressQoSClient,
+		MultiNetworkPolicyClient: cs.MultiNetworkPolicyClient,
+		EgressServiceClient:      cs.EgressServiceClient,
+		AdminPolicyRouteClient:   cs.AdminPolicyRouteClient,
+		IPAMClaimsClient:         cs.IPAMClaimsClient,
+		NetworkAttchDefClient:    cs.NetworkAttchDefClient,
+		UserDefinedNetworkClient: cs.UserDefinedNetworkClient,
+		FRRClient:                cs.FRRClient,
+		NetworkQoSClient:         cs.NetworkQoSClient,
+		NetworkConnectClient:     cs.NetworkConnectClient,
+		UplinkClient:             cs.UplinkClient,
+		VTEPClient:               cs.VTEPClient,
 	}
 }
 
@@ -195,15 +195,15 @@ func (cs *OVNClientset) GetClusterManagerClientset() *OVNClusterManagerClientset
 
 func (cs *OVNClientset) GetNodeClientset() *OVNNodeClientset {
 	return &OVNNodeClientset{
-		KubeClient:                cs.KubeClient,
-		EgressServiceClient:       cs.EgressServiceClient,
-		EgressIPClient:            cs.EgressIPClient,
-		AdminPolicyRouteClient:    cs.AdminPolicyRouteClient,
-		NetworkAttchDefClient:     cs.NetworkAttchDefClient,
-		UserDefinedNetworkClient:  cs.UserDefinedNetworkClient,
-		RouteAdvertisementsClient: cs.RouteAdvertisementsClient,
-		UplinkClient:              cs.UplinkClient,
-		VTEPClient:                cs.VTEPClient,
+		KubeClient:               cs.KubeClient,
+		EgressServiceClient:      cs.EgressServiceClient,
+		EgressIPClient:           cs.EgressIPClient,
+		AdminPolicyRouteClient:   cs.AdminPolicyRouteClient,
+		NetworkAttchDefClient:    cs.NetworkAttchDefClient,
+		UserDefinedNetworkClient: cs.UserDefinedNetworkClient,
+		FRRClient:                cs.FRRClient,
+		UplinkClient:             cs.UplinkClient,
+		VTEPClient:               cs.VTEPClient,
 	}
 }
 
