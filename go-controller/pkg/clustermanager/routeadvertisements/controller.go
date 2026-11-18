@@ -568,11 +568,19 @@ func (c *Controller) reconcileRouteAdvertisements(ctx context.Context, name stri
 		preserved = sets.KeySet(nodeState.failed)
 	}
 	desired := desiredNodeNetworkStatuses(ra, nodeState)
-	if err := c.adoptLegacyAdvertisements(ra, nodeState, preserved, desired); err != nil {
-		return false, err
-	}
 	keep, err := c.preservedNodeNetworkStatuses(ra, nodeState, preserved)
 	if err != nil {
+		return false, err
+	}
+	// A preserved FRRConfiguration cannot be updated. If it advertises
+	// something that is no longer asked for, such as a network that is not
+	// selected anymore, the node is withdrawn instead of preserved.
+	stale, err := c.staleNodeNetworkStatusNodes(name, preserved, keep)
+	if err != nil {
+		return false, err
+	}
+	preserved.Delete(stale.UnsortedList()...)
+	if err := c.adoptLegacyAdvertisements(ra, nodeState, preserved, desired); err != nil {
 		return false, err
 	}
 
@@ -1060,6 +1068,8 @@ func (c *Controller) generateFRRConfigurations(ctx context.Context, ra *ratypes.
 		networkVRFs: make(map[string]string, len(selectedNetworks.networkVRFs)),
 		advertised:  map[string][]string{},
 		failed:      map[string]error{},
+
+		networkTopology: selectedNetworks.networkTopology,
 	}
 	for vrf, network := range selectedNetworks.networkVRFs {
 		nodeState.networkVRFs[network] = advertisedVRF(ra.Spec.TargetVRF, vrf)
@@ -1078,25 +1088,9 @@ func (c *Controller) generateFRRConfigurations(ctx context.Context, ra *ratypes.
 		// gather node specific information
 		nodeNetworks := make([]string, 0, len(selectedNetworks.networks))
 		for _, network := range selectedNetworks.networks {
-			if !c.nm.NodeHasNetwork(nodeName, network) {
-				// only advertise a network on nodes where it is active, that
-				// is, with pods or EgressIPs attached to it; NodeHasNetwork
-				// returns false only with dynamic UDN allocation enabled.
-				// The network manager notifies us when a network goes active
-				// or inactive on a node.
-				continue
-			}
-			if config.OVNKubernetesFeature.EnableDynamicUDNAllocation &&
-				!config.Layer2UsesTransitRouter &&
-				selectedNetworks.networkTopology[network] == types.Layer2Topology &&
-				!c.nodeHasLayer2Allocation(nodeName, network) {
-				// Legacy layer2 topology uses the tunnel ID allocation as a
-				// signal that the network is rendered on the node. The allocation
-				// is stored as a node annotation whose update triggers this
-				// reconcile. Transit-router topology intentionally has no such
-				// allocation, so NodeHasNetwork above is the available signal there.
-				// TODO: replace with a per-node network status once
-				// available, to know when the network is actually rendered.
+			if !c.networkActiveOnNode(nodeName, network, selectedNetworks.networkTopology[network]) {
+				// The network manager notifies us when a network goes
+				// active or inactive on a node.
 				continue
 			}
 			nodeNetworks = append(nodeNetworks, network)
@@ -1429,6 +1423,29 @@ func countAdvertisedPrefixes(generated []*frrtypes.FRRConfiguration) (v4, v6 int
 		v4++
 	}
 	return v4, v6
+}
+
+// networkActiveOnNode reports whether a network is to be advertised from a
+// node: it is active there, that is, with pods or EgressIPs attached to it.
+// This is only ever false with dynamic UDN allocation enabled.
+func (c *Controller) networkActiveOnNode(nodeName, network, topology string) bool {
+	if !c.nm.NodeHasNetwork(nodeName, network) {
+		return false
+	}
+	// Legacy layer2 topology uses the tunnel ID allocation as a signal that
+	// the network is rendered on the node. The allocation is stored as a node
+	// annotation whose update triggers a reconcile. Transit-router topology
+	// intentionally has no such allocation, so NodeHasNetwork is the
+	// available signal there.
+	// TODO: replace with a per-node network status once available, to know
+	// when the network is actually rendered.
+	if config.OVNKubernetesFeature.EnableDynamicUDNAllocation &&
+		!config.Layer2UsesTransitRouter &&
+		topology == types.Layer2Topology &&
+		!c.nodeHasLayer2Allocation(nodeName, network) {
+		return false
+	}
+	return true
 }
 
 // nodeHasLayer2Allocation reports whether the node has a gateway router LRP

@@ -42,6 +42,8 @@ type nodeGeneration struct {
 	// failed maps each node whose configuration could not be generated to
 	// the cause. Other nodes are not affected by these failures.
 	failed map[string]error
+	// networkTopology maps every selected network to its topology.
+	networkTopology map[string]string
 }
 
 // nodeFailuresError reports nodes whose configuration could not be generated
@@ -149,9 +151,9 @@ func generatedNodes(frrConfigs []*frrtypes.FRRConfiguration) sets.Set[string] {
 // preservedNodeNetworkStatuses returns a filter for the entries of nodes whose
 // configuration could not be regenerated. Their previous FRRConfigurations are
 // left in place, so an entry stays only while those still publish what the
-// RouteAdvertisements asks for now. If the target VRF changed, for example,
-// the old routes are in the wrong VRF and the node must go back to
-// translating pod traffic.
+// RouteAdvertisements asks for now. If the target VRF changed or the network
+// went inactive on the node, for example, the old routes are wrong and the
+// node must go back to translating pod traffic.
 func (c *Controller) preservedNodeNetworkStatuses(ra *ratypes.RouteAdvertisements, generation nodeGeneration, preserved sets.Set[string]) (func(node, network string, entry nnstypes.NodeNetworkRouteAdvertisement) bool, error) {
 	if ra == nil || len(preserved) == 0 {
 		return func(string, string, nnstypes.NodeNetworkRouteAdvertisement) bool { return false }, nil
@@ -164,8 +166,39 @@ func (c *Controller) preservedNodeNetworkStatuses(ra *ratypes.RouteAdvertisement
 	return func(node, network string, entry nnstypes.NodeNetworkRouteAdvertisement) bool {
 		vrf, selected := generation.networkVRFs[network]
 		return selected && preserved.Has(node) && configured.Has(node) &&
+			c.networkActiveOnNode(node, network, generation.networkTopology[network]) &&
 			sameNodeNetworkStatusEntry(entry, nodeNetworkStatusEntry(ra, vrf))
 	}, nil
+}
+
+// staleNodeNetworkStatusNodes returns the preserved nodes that have an entry
+// of a RouteAdvertisements which keep rejects, meaning their preserved
+// FRRConfigurations no longer match what the RouteAdvertisements asks for.
+func (c *Controller) staleNodeNetworkStatusNodes(
+	raName string,
+	preserved sets.Set[string],
+	keep func(node, network string, entry nnstypes.NodeNetworkRouteAdvertisement) bool,
+) (sets.Set[string], error) {
+	stale := sets.New[string]()
+	if len(preserved) == 0 {
+		return stale, nil
+	}
+	objs, err := c.nnsIndexer.ByIndex(types.NodeNetworkStatusRouteAdvertisementsIndex, raName)
+	if err != nil {
+		return nil, fmt.Errorf("failed listing NodeNetworkStatuses of RouteAdvertisements %q: %w", raName, err)
+	}
+	for _, obj := range objs {
+		nns, ok := obj.(*nnstypes.NodeNetworkStatus)
+		if !ok || !preserved.Has(nns.Spec.NodeName) {
+			continue
+		}
+		for _, entry := range nns.Spec.RouteAdvertisements {
+			if entry.Name == raName && !keep(nns.Spec.NodeName, nns.Spec.NetworkName, entry) {
+				stale.Insert(nns.Spec.NodeName)
+			}
+		}
+	}
+	return stale, nil
 }
 
 // withdrawNodeNetworkStatuses removes the entries of a RouteAdvertisements
@@ -422,6 +455,9 @@ func (c *Controller) adoptLegacyAdvertisements(
 	for node := range generatedNodes(existing).Intersection(preserved) {
 		desired[node] = make(map[string]nnstypes.NodeNetworkRouteAdvertisement, len(generation.networkVRFs))
 		for network, vrf := range generation.networkVRFs {
+			if !c.networkActiveOnNode(node, network, generation.networkTopology[network]) {
+				continue
+			}
 			desired[node][network] = nodeNetworkStatusEntry(ra, vrf)
 		}
 	}
