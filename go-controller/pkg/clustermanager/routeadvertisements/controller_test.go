@@ -4823,7 +4823,8 @@ func TestManagedPeeringMissingInternalIPs(t *testing.T) {
 	g.Expect(errors.Is(err, errPending)).To(gomega.BeFalse(), "missing addresses must not enter pending cleanup")
 	ra, err := tt.fakeClientset.RouteAdvertisementsClient.K8sV1().RouteAdvertisements().Get(ctx, "ra", metav1.GetOptions{})
 	g.Expect(err).NotTo(gomega.HaveOccurred(), "read initial status")
-	g.Expect(ra.Status.Conditions).To(gomega.BeEmpty(), "failed initial generation must not report acceptance")
+	g.Expect(meta.IsStatusConditionTrue(ra.Status.Conditions, "Accepted")).To(gomega.BeTrue(), "the healthy node is configured")
+	g.Expect(meta.IsStatusConditionTrue(ra.Status.Conditions, "Degraded")).To(gomega.BeTrue(), "the addressless node is reported")
 	setAddresses := func(addresses []corev1.NodeAddress) {
 		t.Helper()
 		node, err := tt.fakeClientset.KubeClient.CoreV1().Nodes().Get(ctx, "node", metav1.GetOptions{})
@@ -4848,6 +4849,7 @@ func TestManagedPeeringMissingInternalIPs(t *testing.T) {
 	ra, err = tt.fakeClientset.RouteAdvertisementsClient.K8sV1().RouteAdvertisements().Get(ctx, "ra", metav1.GetOptions{})
 	g.Expect(err).NotTo(gomega.HaveOccurred(), "snapshot accepted status")
 	g.Expect(meta.IsStatusConditionTrue(ra.Status.Conditions, "Accepted")).To(gomega.BeTrue())
+	g.Expect(meta.IsStatusConditionFalse(ra.Status.Conditions, "Degraded")).To(gomega.BeTrue(), "recovered")
 	nadBefore := tt.defaultNADAnnotation()
 	setAddresses(nil)
 	for i := 0; i < 2; i++ {
@@ -4857,7 +4859,8 @@ func TestManagedPeeringMissingInternalIPs(t *testing.T) {
 		g.Expect(after.Items).To(gomega.ConsistOf(before.Items), "preserve healthy and addressless node configurations")
 		current, err := tt.fakeClientset.RouteAdvertisementsClient.K8sV1().RouteAdvertisements().Get(ctx, "ra", metav1.GetOptions{})
 		g.Expect(err).NotTo(gomega.HaveOccurred(), "read retained status")
-		g.Expect(current.Status).To(gomega.Equal(ra.Status), "do not publish a new success on failure")
+		g.Expect(meta.IsStatusConditionTrue(current.Status.Conditions, "Accepted")).To(gomega.BeTrue(), "stay accepted for the healthy node")
+		g.Expect(meta.IsStatusConditionTrue(current.Status.Conditions, "Degraded")).To(gomega.BeTrue(), "report the addressless node")
 		g.Expect(tt.defaultNADAnnotation()).To(gomega.Equal(nadBefore), "preserve NAD references")
 	}
 	// Change the prefixes too, proving recovery performs a new configuration update.

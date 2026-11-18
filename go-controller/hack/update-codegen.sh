@@ -45,6 +45,9 @@ get_crd_version() {
     networkqos)
       echo "v1alpha1"
       ;;
+    nodenetworkstatus)
+      echo "v1alpha1"
+      ;;
     *)
       echo "v1"
       ;;
@@ -193,3 +196,5 @@ echo "Copying uplink CRD"
 cp _output/crds/k8s.ovn.org_uplinks.yaml ../helm/ovn-kubernetes/crds/k8s.ovn.org_uplinks.yaml
 echo "Copying uplinkstate CRD"
 cp _output/crds/k8s.ovn.org_uplinkstates.yaml ../helm/ovn-kubernetes/crds/k8s.ovn.org_uplinkstates.yaml
+echo "Copying nodenetworkstatus CRD"
+cp _output/crds/k8s.ovn.org_nodenetworkstatuses.yaml ../helm/ovn-kubernetes/crds/k8s.ovn.org_nodenetworkstatuses.yaml

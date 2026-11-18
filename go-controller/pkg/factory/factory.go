@@ -93,6 +93,11 @@ import (
 	networkqosinformerfactory "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/networkqos/v1alpha1/apis/informers/externalversions"
 	networkqosinformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/networkqos/v1alpha1/apis/informers/externalversions/networkqos/v1alpha1"
 	networkqoslister "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/networkqos/v1alpha1/apis/listers/networkqos/v1alpha1"
+	nodenetworkstatusapi "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/nodenetworkstatus/v1alpha1"
+	nodenetworkstatusclientset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/nodenetworkstatus/v1alpha1/apis/clientset/versioned"
+	nodenetworkstatusscheme "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/nodenetworkstatus/v1alpha1/apis/clientset/versioned/scheme"
+	nodenetworkstatusinformerfactory "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/nodenetworkstatus/v1alpha1/apis/informers/externalversions"
+	nodenetworkstatusinformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/nodenetworkstatus/v1alpha1/apis/informers/externalversions/nodenetworkstatus/v1alpha1"
 	routeadvertisementsapi "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1"
 	routeadvertisementsscheme "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1/apis/clientset/versioned/scheme"
 	routeadvertisementsinformerfactory "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1/apis/informers/externalversions"
@@ -137,6 +142,7 @@ type WatchFactory struct {
 	udnFactory           userdefinednetworkapiinformerfactory.SharedInformerFactory
 	cncFactory           networkconnectinformerfactory.SharedInformerFactory
 	raFactory            routeadvertisementsinformerfactory.SharedInformerFactory
+	nnsFactory           nodenetworkstatusinformerfactory.SharedInformerFactory
 	frrFactory           frrinformerfactory.SharedInformerFactory
 	networkQoSFactory    networkqosinformerfactory.SharedInformerFactory
 	uplinkFactory        uplinkinformerfactory.SharedInformerFactory
@@ -169,6 +175,7 @@ func (wf *WatchFactory) ShallowClone() *WatchFactory {
 		udnFactory:           wf.udnFactory,
 		cncFactory:           wf.cncFactory,
 		raFactory:            wf.raFactory,
+		nnsFactory:           wf.nnsFactory,
 		frrFactory:           wf.frrFactory,
 		networkQoSFactory:    wf.networkQoSFactory,
 		uplinkFactory:        wf.uplinkFactory,
@@ -351,6 +358,45 @@ func newUplinkStateSharedInformerFactory(
 	)
 }
 
+// newNodeNetworkStatusSharedInformerFactory watches only the objects of
+// nodeName when it is set: a node never needs the state of other nodes, and
+// the collection grows with nodes times networks. The indexes let callers
+// find the objects of a network or a RouteAdvertisements without scanning.
+func newNodeNetworkStatusSharedInformerFactory(
+	client nodenetworkstatusclientset.Interface,
+	nodeName string,
+) (nodenetworkstatusinformerfactory.SharedInformerFactory, error) {
+	var options []nodenetworkstatusinformerfactory.SharedInformerOption
+	if nodeName != "" {
+		options = append(options, nodenetworkstatusinformerfactory.WithTweakListOptions(func(options *metav1.ListOptions) {
+			options.FieldSelector = fields.OneTermEqualSelector("spec.nodeName", nodeName).String()
+		}))
+	}
+	f := nodenetworkstatusinformerfactory.NewSharedInformerFactoryWithOptions(client, resyncInterval, options...)
+	// make sure shared informer is created for a factory, so on Start() it is initialized and caches are synced.
+	err := f.K8s().V1alpha1().NodeNetworkStatuses().Informer().AddIndexers(cache.Indexers{
+		types.NodeNetworkStatusNetworkIndex: func(obj interface{}) ([]string, error) {
+			nns, ok := obj.(*nodenetworkstatusapi.NodeNetworkStatus)
+			if !ok {
+				return nil, nil
+			}
+			return []string{nns.Spec.NetworkName}, nil
+		},
+		types.NodeNetworkStatusRouteAdvertisementsIndex: func(obj interface{}) ([]string, error) {
+			nns, ok := obj.(*nodenetworkstatusapi.NodeNetworkStatus)
+			if !ok {
+				return nil, nil
+			}
+			names := make([]string, 0, len(nns.Spec.RouteAdvertisements))
+			for _, ra := range nns.Spec.RouteAdvertisements {
+				names = append(names, ra.Name)
+			}
+			return names, nil
+		},
+	})
+	return f, err
+}
+
 // NewOVNKubeControllerWatchFactory initializes a new watch factory for the
 // ovnkube controller process on nodeName.
 func NewOVNKubeControllerWatchFactory(ovnClientset *util.OVNKubeControllerClientset, nodeName string) (*WatchFactory, error) {
@@ -399,6 +445,9 @@ func NewOVNKubeControllerWatchFactory(ovnClientset *util.OVNKubeControllerClient
 		return nil, err
 	}
 	if err := routeadvertisementsapi.AddToScheme(routeadvertisementsscheme.Scheme); err != nil {
+		return nil, err
+	}
+	if err := nodenetworkstatusapi.AddToScheme(nodenetworkstatusscheme.Scheme); err != nil {
 		return nil, err
 	}
 
@@ -583,6 +632,12 @@ func NewOVNKubeControllerWatchFactory(ovnClientset *util.OVNKubeControllerClient
 		wf.raFactory = routeadvertisementsinformerfactory.NewSharedInformerFactory(ovnClientset.RouteAdvertisementsClient, resyncInterval)
 		// make sure shared informer is created for a factory, so on wf.raFactory.Start() it is initialized and caches are synced.
 		wf.raFactory.K8s().V1().RouteAdvertisements().Informer()
+
+		nnsFactory, nnsErr := newNodeNetworkStatusSharedInformerFactory(ovnClientset.NodeNetworkStatusClient, nodeName)
+		if nnsErr != nil {
+			return nil, nnsErr
+		}
+		wf.nnsFactory = nnsFactory
 	}
 
 	if config.OVNKubernetesFeature.EnableNetworkQoS {
@@ -740,6 +795,13 @@ func (wf *WatchFactory) Start() error {
 		}
 	}
 
+	if wf.nnsFactory != nil {
+		wf.nnsFactory.Start(wf.stopChan)
+		if err := waitForCacheSyncWithTimeout(wf.nnsFactory, wf.stopChan); err != nil {
+			return err
+		}
+	}
+
 	if wf.frrFactory != nil {
 		wf.frrFactory.Start(wf.stopChan)
 		if err := waitForCacheSyncWithTimeout(wf.frrFactory, wf.stopChan); err != nil {
@@ -808,6 +870,10 @@ func (wf *WatchFactory) Stop() {
 		wf.raFactory.Shutdown()
 	}
 
+	if wf.nnsFactory != nil {
+		wf.nnsFactory.Shutdown()
+	}
+
 	if wf.frrFactory != nil {
 		wf.frrFactory.Shutdown()
 	}
@@ -847,6 +913,9 @@ func NewNodeWatchFactory(ovnClientset *util.OVNNodeClientset, nodeName string) (
 		return nil, err
 	}
 	if err := routeadvertisementsapi.AddToScheme(routeadvertisementsscheme.Scheme); err != nil {
+		return nil, err
+	}
+	if err := nodenetworkstatusapi.AddToScheme(nodenetworkstatusscheme.Scheme); err != nil {
 		return nil, err
 	}
 	if err := uplinkapi.AddToScheme(uplinkscheme.Scheme); err != nil {
@@ -929,6 +998,12 @@ func NewNodeWatchFactory(ovnClientset *util.OVNNodeClientset, nodeName string) (
 		wf.raFactory = routeadvertisementsinformerfactory.NewSharedInformerFactory(ovnClientset.RouteAdvertisementsClient, resyncInterval)
 		// make sure shared informer is created for a factory, so on wf.raFactory.Start() it is initialized and caches are synced.
 		wf.raFactory.K8s().V1().RouteAdvertisements().Informer()
+
+		nnsFactory, nnsErr := newNodeNetworkStatusSharedInformerFactory(ovnClientset.NodeNetworkStatusClient, nodeName)
+		if nnsErr != nil {
+			return nil, nnsErr
+		}
+		wf.nnsFactory = nnsFactory
 	}
 
 	if util.IsEVPNEnabled() {
@@ -1035,6 +1110,9 @@ func NewClusterManagerWatchFactory(ovnClientset *util.OVNClusterManagerClientset
 		return nil, err
 	}
 	if err := routeadvertisementsapi.AddToScheme(routeadvertisementsscheme.Scheme); err != nil {
+		return nil, err
+	}
+	if err := nodenetworkstatusapi.AddToScheme(nodenetworkstatusscheme.Scheme); err != nil {
 		return nil, err
 	}
 	if err := frrapi.AddToScheme(frrscheme.Scheme); err != nil {
@@ -1227,6 +1305,12 @@ func NewClusterManagerWatchFactory(ovnClientset *util.OVNClusterManagerClientset
 		wf.raFactory = routeadvertisementsinformerfactory.NewSharedInformerFactory(ovnClientset.RouteAdvertisementsClient, resyncInterval)
 		// make sure shared informer is created for a factory, so on wf.raFactory.Start() it is initialized and caches are synced.
 		wf.raFactory.K8s().V1().RouteAdvertisements().Informer()
+
+		nnsFactory, nnsErr := newNodeNetworkStatusSharedInformerFactory(ovnClientset.NodeNetworkStatusClient, "")
+		if nnsErr != nil {
+			return nil, nnsErr
+		}
+		wf.nnsFactory = nnsFactory
 
 		wf.frrFactory = frrinformerfactory.NewSharedInformerFactory(ovnClientset.FRRClient, resyncInterval)
 		// make sure shared informer is created for a factory, so on wf.frrFactory.Start() it is initialized and caches are synced.
@@ -1966,6 +2050,10 @@ func (wf *WatchFactory) DNSNameResolverInformer() ocpnetworkinformerv1alpha1.DNS
 
 func (wf *WatchFactory) RouteAdvertisementsInformer() routeadvertisementsinformer.RouteAdvertisementsInformer {
 	return wf.raFactory.K8s().V1().RouteAdvertisements()
+}
+
+func (wf *WatchFactory) NodeNetworkStatusInformer() nodenetworkstatusinformer.NodeNetworkStatusInformer {
+	return wf.nnsFactory.K8s().V1alpha1().NodeNetworkStatuses()
 }
 
 func (wf *WatchFactory) FRRConfigurationsInformer() frrinformer.FRRConfigurationInformer {

@@ -55,6 +55,7 @@ import (
 	egressqosclientset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressqos/v1/apis/clientset/versioned"
 	egressserviceclientset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressservice/v1/apis/clientset/versioned"
 	networkqosclientset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/networkqos/v1alpha1/apis/clientset/versioned"
+	nodenetworkstatusclientset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/nodenetworkstatus/v1alpha1/apis/clientset/versioned"
 	routeadvertisementsclientset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1/apis/clientset/versioned"
 	uplinkclientset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/uplink/v1alpha1/apis/clientset/versioned"
 	userdefinednetworkclientset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/userdefinednetwork/v1/apis/clientset/versioned"
@@ -81,6 +82,7 @@ type OVNClientset struct {
 	FRRClient                 frrclientset.Interface
 	NetworkQoSClient          networkqosclientset.Interface
 	UplinkClient              uplinkclientset.Interface
+	NodeNetworkStatusClient   nodenetworkstatusclientset.Interface
 	VTEPClient                vtepclientset.Interface
 }
 
@@ -102,6 +104,7 @@ type OVNKubeControllerClientset struct {
 	NetworkQoSClient          networkqosclientset.Interface
 	NetworkConnectClient      networkconnectclientset.Interface
 	UplinkClient              uplinkclientset.Interface
+	NodeNetworkStatusClient   nodenetworkstatusclientset.Interface
 	VTEPClient                vtepclientset.Interface
 }
 
@@ -114,6 +117,7 @@ type OVNNodeClientset struct {
 	UserDefinedNetworkClient  userdefinednetworkclientset.Interface
 	RouteAdvertisementsClient routeadvertisementsclientset.Interface
 	UplinkClient              uplinkclientset.Interface
+	NodeNetworkStatusClient   nodenetworkstatusclientset.Interface
 	VTEPClient                vtepclientset.Interface
 }
 
@@ -135,6 +139,7 @@ type OVNClusterManagerClientset struct {
 	FRRClient                 frrclientset.Interface
 	NetworkQoSClient          networkqosclientset.Interface
 	UplinkClient              uplinkclientset.Interface
+	NodeNetworkStatusClient   nodenetworkstatusclientset.Interface
 	VTEPClient                vtepclientset.Interface
 }
 
@@ -166,6 +171,7 @@ func (cs *OVNClientset) GetOVNKubeControllerClientset() *OVNKubeControllerClient
 		NetworkQoSClient:          cs.NetworkQoSClient,
 		NetworkConnectClient:      cs.NetworkConnectClient,
 		UplinkClient:              cs.UplinkClient,
+		NodeNetworkStatusClient:   cs.NodeNetworkStatusClient,
 		VTEPClient:                cs.VTEPClient,
 	}
 }
@@ -189,6 +195,7 @@ func (cs *OVNClientset) GetClusterManagerClientset() *OVNClusterManagerClientset
 		FRRClient:                 cs.FRRClient,
 		NetworkQoSClient:          cs.NetworkQoSClient,
 		UplinkClient:              cs.UplinkClient,
+		NodeNetworkStatusClient:   cs.NodeNetworkStatusClient,
 		VTEPClient:                cs.VTEPClient,
 	}
 }
@@ -203,6 +210,7 @@ func (cs *OVNClientset) GetNodeClientset() *OVNNodeClientset {
 		UserDefinedNetworkClient:  cs.UserDefinedNetworkClient,
 		RouteAdvertisementsClient: cs.RouteAdvertisementsClient,
 		UplinkClient:              cs.UplinkClient,
+		NodeNetworkStatusClient:   cs.NodeNetworkStatusClient,
 		VTEPClient:                cs.VTEPClient,
 	}
 }
@@ -500,6 +508,10 @@ func NewOVNClientset(conf *config.KubernetesConfig) (*OVNClientset, error) {
 	if err != nil {
 		return nil, err
 	}
+	nodeNetworkStatusClientset, err := nodenetworkstatusclientset.NewForConfig(kconfig)
+	if err != nil {
+		return nil, err
+	}
 
 	vtepClientset, err := vtepclientset.NewForConfig(kconfig)
 	if err != nil {
@@ -525,6 +537,7 @@ func NewOVNClientset(conf *config.KubernetesConfig) (*OVNClientset, error) {
 		FRRClient:                 frrClientset,
 		NetworkQoSClient:          networkqosClientset,
 		UplinkClient:              uplinkClientset,
+		NodeNetworkStatusClient:   nodeNetworkStatusClientset,
 		VTEPClient:                vtepClientset,
 	}, nil
 }

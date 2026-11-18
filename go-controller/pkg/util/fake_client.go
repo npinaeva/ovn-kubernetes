@@ -38,6 +38,8 @@ import (
 	egressservicefake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressservice/v1/apis/clientset/versioned/fake"
 	networkqos "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/networkqos/v1alpha1"
 	networkqosfake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/networkqos/v1alpha1/apis/clientset/versioned/fake"
+	nodenetworkstatusv1alpha1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/nodenetworkstatus/v1alpha1"
+	nodenetworkstatusfake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/nodenetworkstatus/v1alpha1/apis/clientset/versioned/fake"
 	routeadvertisements "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1"
 	routeadvertisementsfake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1/apis/clientset/versioned/fake"
 	uplinkv1alpha1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/uplink/v1alpha1"
@@ -66,6 +68,7 @@ func GetOVNClientset(objects ...runtime.Object) *OVNClientset {
 	frrObjects := []runtime.Object{}
 	networkConnectObjects := []runtime.Object{}
 	uplinkObjects := []runtime.Object{}
+	nodeNetworkStatusObjects := []runtime.Object{}
 	vtepObjects := []runtime.Object{}
 	for _, object := range objects {
 		switch object.(type) {
@@ -101,6 +104,8 @@ func GetOVNClientset(objects ...runtime.Object) *OVNClientset {
 			networkConnectObjects = append(networkConnectObjects, object)
 		case *uplinkv1alpha1.Uplink, *uplinkv1alpha1.UplinkState:
 			uplinkObjects = append(uplinkObjects, object)
+		case *nodenetworkstatusv1alpha1.NodeNetworkStatus:
+			nodeNetworkStatusObjects = append(nodeNetworkStatusObjects, object)
 		case *vtepv1.VTEP:
 			vtepObjects = append(vtepObjects, object)
 		default:
@@ -133,6 +138,7 @@ func GetOVNClientset(objects ...runtime.Object) *OVNClientset {
 		NetworkQoSClient:          networkqosfake.NewSimpleClientset(networkQoSObjects...),
 		NetworkConnectClient:      networkconnectfake.NewSimpleClientset(networkConnectObjects...),
 		UplinkClient:              uplinkfake.NewSimpleClientset(uplinkObjects...),
+		NodeNetworkStatusClient:   nodenetworkstatusfake.NewSimpleClientset(nodeNetworkStatusObjects...),
 		VTEPClient:                vtepfake.NewSimpleClientset(vtepObjects...),
 	}
 }

@@ -234,6 +234,18 @@ const (
 	OvnK8sTopoAnno            = OvnK8sPrefix + "/" + "topology-version"
 	OvnK8sSmallMTUTaintKey    = OvnK8sPrefix + "/" + "mtu-too-small"
 	OvnRouteAdvertisementsKey = OvnK8sPrefix + "/route-advertisements"
+
+	// OvnRouteAdvertisementsNodeNetworkStatusKey is set to "true" on a
+	// RouteAdvertisements by cluster manager once NodeNetworkStatus objects
+	// report where it is advertised. Until then nodes derive that from the
+	// RouteAdvertisements itself, as releases without NodeNetworkStatus did.
+	OvnRouteAdvertisementsNodeNetworkStatusKey = OvnK8sPrefix + "/node-network-status"
+
+	// NodeNetworkStatusNetworkIndex and NodeNetworkStatusRouteAdvertisementsIndex
+	// name the informer indexes of NodeNetworkStatus objects by network name
+	// and by the RouteAdvertisements they list.
+	NodeNetworkStatusNetworkIndex             = "network"
+	NodeNetworkStatusRouteAdvertisementsIndex = "routeAdvertisements"
 	// OvnRouteAdvertisementsValidatedKey annotates a FRRConfiguration
 	// generated from input validated by the RouteAdvertisements controller
 	OvnRouteAdvertisementsValidatedKey = OvnK8sPrefix + "/route-advertisements-validated"

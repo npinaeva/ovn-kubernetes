@@ -12,6 +12,7 @@ import (
 	v1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1/apis/informers/externalversions/adminpolicybasedroute/v1"
 	clusternetworkconnectv1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/clusternetworkconnect/v1/apis/informers/externalversions/clusternetworkconnect/v1"
 	egressipv1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/informers/externalversions/egressip/v1"
+	nodenetworkstatusv1alpha1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/nodenetworkstatus/v1alpha1/apis/informers/externalversions/nodenetworkstatus/v1alpha1"
 	routeadvertisementsv1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1/apis/informers/externalversions/routeadvertisements/v1"
 	v1alpha1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/uplink/v1alpha1/apis/informers/externalversions/uplink/v1alpha1"
 	userdefinednetworkv1 "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/userdefinednetwork/v1/apis/informers/externalversions/userdefinednetwork/v1"
@@ -694,6 +695,26 @@ func (_m *NodeWatchFactory) NodeInformer() cache.SharedIndexInformer {
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(cache.SharedIndexInformer)
+		}
+	}
+
+	return r0
+}
+
+// NodeNetworkStatusInformer provides a mock function with no fields
+func (_m *NodeWatchFactory) NodeNetworkStatusInformer() nodenetworkstatusv1alpha1.NodeNetworkStatusInformer {
+	ret := _m.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for NodeNetworkStatusInformer")
+	}
+
+	var r0 nodenetworkstatusv1alpha1.NodeNetworkStatusInformer
+	if rf, ok := ret.Get(0).(func() nodenetworkstatusv1alpha1.NodeNetworkStatusInformer); ok {
+		r0 = rf()
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(nodenetworkstatusv1alpha1.NodeNetworkStatusInformer)
 		}
 	}
 

@@ -19,6 +19,7 @@ import (
 
 	ovncnitypes "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
+	nnstypes "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/nodenetworkstatus/v1alpha1"
 	ratypes "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
@@ -91,6 +92,8 @@ func TestSetAdvertisements(t *testing.T) {
 	podNetworkRARejected.Status.Conditions[0].Status = metav1.ConditionFalse
 	podNetworkRAOutdated := podNetworkRA
 	podNetworkRAOutdated.Generation = 1
+	podNetworkRAReported := *podNetworkRA.DeepCopy()
+	podNetworkRAReported.Annotations = map[string]string{types.OvnRouteAdvertisementsNodeNetworkStatusKey: "true"}
 
 	testNode := corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -144,6 +147,12 @@ func TestSetAdvertisements(t *testing.T) {
 			network: defaultNetwork,
 			ra:      &podNetworkRA,
 			node:    otherNode,
+		},
+		{
+			name:    "ignores advertisements reported by NodeNetworkStatus",
+			network: defaultNetwork,
+			ra:      &podNetworkRAReported,
+			node:    testNode,
 		},
 		{
 			name:    "ignores advertisements with no Accepted condition",
@@ -302,6 +311,176 @@ func TestSetAdvertisements(t *testing.T) {
 	}
 }
 
+func TestSetAdvertisementsFromNodeNetworkStatus(t *testing.T) {
+	testNodeName := "testNode"
+	testNADName := "test/NAD"
+	testRAName := "testRA"
+	testVRFName := "testVRF"
+
+	defaultNetwork := &ovncnitypes.NetConf{
+		NetConf: cnitypes.NetConf{
+			Name: types.DefaultNetworkName,
+			Type: "ovn-k8s-cni-overlay",
+		},
+		MTU: 1400,
+	}
+	primaryNetwork := &ovncnitypes.NetConf{
+		NetConf: cnitypes.NetConf{
+			Name: "primary",
+			Type: "ovn-k8s-cni-overlay",
+		},
+		Topology: "layer3",
+		Role:     "primary",
+		MTU:      1400,
+	}
+
+	status := func(node, network string, ras ...nnstypes.NodeNetworkRouteAdvertisement) *nnstypes.NodeNetworkStatus {
+		return &nnstypes.NodeNetworkStatus{
+			ObjectMeta: metav1.ObjectMeta{Name: node + "." + network},
+			Spec: nnstypes.NodeNetworkStatusSpec{
+				NodeName:            node,
+				NetworkName:         network,
+				RouteAdvertisements: ras,
+			},
+		}
+	}
+	podNetworkRA := nnstypes.NodeNetworkRouteAdvertisement{
+		Name:           testRAName,
+		VRF:            testVRFName,
+		Advertisements: []nnstypes.AdvertisementType{nnstypes.PodNetwork},
+	}
+	otherPodNetworkRA := nnstypes.NodeNetworkRouteAdvertisement{
+		Name:           "otherRA",
+		VRF:            types.DefaultNetworkName,
+		Advertisements: []nnstypes.AdvertisementType{nnstypes.EgressIP, nnstypes.PodNetwork},
+	}
+	egressIPRA := nnstypes.NodeNetworkRouteAdvertisement{
+		Name:           testRAName,
+		VRF:            testVRFName,
+		Advertisements: []nnstypes.AdvertisementType{nnstypes.EgressIP},
+	}
+
+	tests := []struct {
+		name        string
+		network     *ovncnitypes.NetConf
+		statuses    []*nnstypes.NodeNetworkStatus
+		expected    map[string][]string
+		expectedEIP map[string][]string
+	}{
+		{
+			name:     "reconciles VRF advertisements for the node of default node network controller",
+			network:  defaultNetwork,
+			statuses: []*nnstypes.NodeNetworkStatus{status(testNodeName, types.DefaultNetworkName, podNetworkRA)},
+			expected: map[string][]string{
+				testNodeName: {testVRFName},
+			},
+		},
+		{
+			name:     "reconciles VRF advertisements for the node of primary network controller",
+			network:  primaryNetwork,
+			statuses: []*nnstypes.NodeNetworkStatus{status(testNodeName, "primary", podNetworkRA)},
+			expected: map[string][]string{
+				testNodeName: {testVRFName},
+			},
+		},
+		{
+			name:     "reconciles VRF advertisements of every route advertisement",
+			network:  primaryNetwork,
+			statuses: []*nnstypes.NodeNetworkStatus{status(testNodeName, "primary", otherPodNetworkRA, podNetworkRA)},
+			expected: map[string][]string{
+				testNodeName: {types.DefaultNetworkName, testVRFName},
+			},
+			expectedEIP: map[string][]string{
+				testNodeName: {types.DefaultNetworkName},
+			},
+		},
+		{
+			name:     "ignores advertisements that are not for the pod network",
+			network:  defaultNetwork,
+			statuses: []*nnstypes.NodeNetworkStatus{status(testNodeName, types.DefaultNetworkName, egressIPRA)},
+		},
+		{
+			name:     "ignores advertisements that are not for applicable node",
+			network:  defaultNetwork,
+			statuses: []*nnstypes.NodeNetworkStatus{status("otherNode", types.DefaultNetworkName, podNetworkRA)},
+		},
+		{
+			name:     "ignores advertisements of other networks",
+			network:  defaultNetwork,
+			statuses: []*nnstypes.NodeNetworkStatus{status(testNodeName, "primary", podNetworkRA)},
+		},
+		{
+			name:    "starts network without advertisements when nothing is published for the node",
+			network: primaryNetwork,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			config.OVNKubernetesFeature.EnableMultiNetwork = true
+			config.OVNKubernetesFeature.EnableRouteAdvertisements = true
+			fakeClient := util.GetOVNClientset().GetOVNKubeControllerClientset()
+			wf, err := factory.NewOVNKubeControllerWatchFactory(fakeClient, "")
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+
+			tcm := &testControllerManager{
+				controllers: map[string]NetworkController{},
+				defaultNetwork: &testNetworkController{
+					ReconcilableNetInfo: &util.DefaultNetInfo{},
+				},
+			}
+			nm := newNetworkController("", testNodeName, tcm, wf, false)
+
+			for _, nns := range tt.statuses {
+				_, err = fakeClient.NodeNetworkStatusClient.K8sV1alpha1().NodeNetworkStatuses().Create(context.Background(), nns, metav1.CreateOptions{})
+				g.Expect(err).ToNot(gomega.HaveOccurred())
+			}
+
+			err = wf.Start()
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			defer wf.Shutdown()
+
+			netInfo, err := util.NewNetInfo(tt.network)
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			mutableNetInfo := util.NewMutableNetInfo(netInfo)
+			mutableNetInfo.AddNADs(testNADName)
+
+			// no NAD references a route advertisement evaluated the legacy way
+			nm.getNADKeysForNetwork = func(string) []string { return nil }
+
+			nm.EnsureNetwork(mutableNetInfo)
+			g.Expect(nm.Start()).To(gomega.Succeed())
+			defer nm.Stop()
+
+			meetsExpectations := func(g gomega.Gomega) {
+				tcm.Lock()
+				defer tcm.Unlock()
+				var reconcilable ReconcilableNetworkController
+				switch tt.network.Name {
+				case types.DefaultNetworkName:
+					reconcilable = tcm.GetDefaultNetworkController()
+				default:
+					reconcilable = tcm.controllers[testNetworkKey(netInfo)]
+				}
+				g.Expect(reconcilable).ToNot(gomega.BeNil())
+
+				if tt.expected == nil {
+					tt.expected = map[string][]string{}
+				}
+				g.Expect(reconcilable.GetPodNetworkAdvertisedVRFs()).To(gomega.Equal(tt.expected))
+				if tt.expectedEIP == nil {
+					tt.expectedEIP = map[string][]string{}
+				}
+				g.Expect(reconcilable.GetEgressIPAdvertisedVRFs()).To(gomega.Equal(tt.expectedEIP))
+			}
+
+			g.Eventually(meetsExpectations).Should(gomega.Succeed())
+			g.Consistently(meetsExpectations).Should(gomega.Succeed())
+		})
+	}
+}
+
 func TestNetworkControllerIsNodeManaged(t *testing.T) {
 	const localNode = "local-node"
 
@@ -334,7 +513,7 @@ func TestNetworkControllerIsNodeManaged(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			g := gomega.NewWithT(t)
-			g.Expect(tt.controller.isNodeManaged(tt.node)).To(gomega.Equal(tt.want))
+			g.Expect(tt.controller.isNodeManaged(tt.node.Name)).To(gomega.Equal(tt.want))
 		})
 	}
 }

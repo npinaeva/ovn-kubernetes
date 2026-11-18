@@ -195,6 +195,7 @@ rules:
     - apiGroups: ["k8s.ovn.org"]
       resources:
           - routeadvertisements
+          - nodenetworkstatuses
       verbs: [ "get", "list", "watch" ]
     {{- end }}
     {{- if eq (hasKey .Values.global "enableOvnKubeIdentity" | ternary .Values.global.enableOvnKubeIdentity true) true }}
