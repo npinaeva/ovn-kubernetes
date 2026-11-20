@@ -252,10 +252,18 @@ func TestDeleteIncompleteVTEPConfigurations(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	c := &Controller{frrClient: client}
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	cached, err := client.ApiV1beta1().FRRConfigurations("test").List(context.Background(), metav1.ListOptions{})
+	g.Expect(err).NotTo(gomega.HaveOccurred(), "listing configurations for the cache")
+	for i := range cached.Items {
+		g.Expect(indexer.Add(&cached.Items[i])).To(gomega.Succeed())
+	}
+	frrLister := frrlisters.NewFRRConfigurationLister(indexer)
+	c := &Controller{pendingWrites: newPendingWrites(frrLister, nil), frrClient: client, frrLister: frrLister}
 	updated, err := c.deleteIncompleteVTEPConfigurations(context.Background(), "ra", sets.New("invalid-node"))
 	g.Expect(updated).To(gomega.BeTrue(), "successful deletion must be recorded despite other failures")
-	expectFRRMetrics(t, "ra", 3, 1, 0)
+	// The sample still counts the object deleted in this pass until the retry.
+	expectFRRMetrics(t, "ra", 4, 1, 0)
 	g.Expect(errors.Is(err, failureA)).To(gomega.BeTrue(), "cleanup must retain the first deletion error")
 	g.Expect(errors.Is(err, failureB)).To(gomega.BeTrue(), "cleanup must retain the second deletion error")
 	g.Expect(errors.Is(err, errConfig)).To(gomega.BeFalse(), "cleanup failures must trigger retries")
@@ -5690,12 +5698,7 @@ func TestController_reconcilePartialNodeFailure(t *testing.T) {
 			g.Expect(tt.c.handleReconcileError(ctx, "ra", reconcileErr)).To(gomega.Succeed(), "handle retry exhaustion for the failed deletion")
 			tt.expectRAStatus(true, true)
 			failDelete = false
-			// Simulate the FRR informer still catching up to the failed node's
-			// last publish. Its old config must be found in the API for cleanup.
-			lister := tt.c.frrLister
-			tt.c.frrLister = tt.frrCacheWithout(old.Name)
 			g.Expect(tt.c.reconcile(ctx, "ra")).To(gomega.Succeed())
-			tt.c.frrLister = lister
 			g.Expect(slices.Collect(maps.Keys(tt.generatedConfigs("ra")))).To(gomega.ConsistOf("ra/frrConfig/node", "ra/frrConfig/node2"))
 			_, err := tt.fakeClientset.FRRClient.ApiV1beta1().FRRConfigurations("frrNamespace").Get(ctx, old.Name, metav1.GetOptions{})
 			g.Expect(apierrors.IsNotFound(err)).To(gomega.BeTrue(), "withdraw the failed node's complete configuration")
@@ -5840,9 +5843,8 @@ func TestController_reconcileEgressIPOwnerChange(t *testing.T) {
 			}
 			g.Eventually(func() error { _, err := tt.c.nodeLister.Get("node1"); return err }, 5*time.Second).Should(gomega.Succeed())
 
-			// The address can move before the informer sees the old advertisement.
-			// The new owner must wait even when both nodes generated successfully.
-			tt.c.frrLister = tt.frrCacheWithout(old.Name)
+			// The new owner must wait for the old advertisement's withdrawal
+			// even when both nodes generated successfully.
 			failDelete := true
 			deleteErr := errors.New("injected cleanup failure")
 			tt.fakeClientset.FRRClient.(Fake).PrependReactor("delete", "frrconfigurations", func(action ctesting.Action) (bool, runtime.Object, error) {
@@ -5861,6 +5863,7 @@ func TestController_reconcileEgressIPOwnerChange(t *testing.T) {
 				g.Expect(configs["ra/frrConfig/node"].Spec.BGP.Routers[0].Prefixes).To(gomega.ConsistOf(wantPrefixes), "only the pod subnet is advertised on the healthy node")
 			}
 			failDelete = false
+			tt.waitForFRRCache()
 			g.Expect(tt.c.reconcile(ctx, "ra")).To(gomega.Succeed(), "withdraw the old configuration and publish the healthy node's prefixes")
 			configs := tt.generatedConfigs("ra")
 			g.Expect(slices.Collect(maps.Keys(configs))).To(gomega.ConsistOf("ra/frrConfig/node"), "the former owner's configuration must be gone")

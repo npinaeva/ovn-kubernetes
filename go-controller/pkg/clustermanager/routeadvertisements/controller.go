@@ -126,6 +126,8 @@ type Controller struct {
 	// selecting that network
 	raNetworksLock sync.RWMutex
 	raNetworks     map[string]sets.Set[string]
+
+	pendingWrites *pendingWrites
 }
 
 // networkRefReconcilerFunc adapts a function to the
@@ -184,6 +186,7 @@ func NewController(
 		nm:              nm,
 		raNetworks:      map[string]sets.Set[string]{},
 	}
+	c.pendingWrites = newPendingWrites(c.frrLister, c.nadLister)
 	if util.IsUplinkEnabled() {
 		c.uplinkStateLister = wf.UplinkStateInformer().Lister()
 	}
@@ -409,6 +412,12 @@ func (c *Controller) handleReconcileError(ctx context.Context, key string, error
 // The controller processes selected events of RouteAdvertisements,
 // FRRConfigurations, Nodes, EgressIPs, NADs and namespaces.
 func (c *Controller) reconcile(ctx context.Context, name string) error {
+	// The cache must show this RA's own last writes before we compare it
+	// with the desired state again. Their events requeue the RA.
+	if wait := c.pendingWrites.wait(name); wait > 0 {
+		c.raController.ReconcileAfter(name, wait)
+		return nil
+	}
 	startTime := time.Now()
 	result := reconcileResultSuccess
 	deleted := false
@@ -488,12 +497,9 @@ func (c *Controller) reconcileRouteAdvertisements(ctx context.Context, name stri
 	var nadErr error
 	intent := util.NewRouteAdvertisementsIntent(ra)
 	if len(result.nads) > 0 {
-		updates, nadErr = c.getNADUpdates(ctx, name, intent, result.nads)
+		updates, nadErr = c.getNADUpdates(name, intent, result.nads)
 	}
-	// An FRR write can succeed while the NAD patch fails. On rollback the
-	// informer may still show the original VRF, so check the API before
-	// publishing the new intent or clearing the old one.
-	hadFRRUpdates, frrErr := c.updateFRRConfigurations(ctx, name, result, len(updates) > 0)
+	hadFRRUpdates, frrErr := c.updateFRRConfigurations(ctx, name, result)
 	if frrErr != nil {
 		local, ok := frrErr.(*nodeGenerationError)
 		if !ok || len(result.nads) == 0 || result.vtepErr != nil || nadErr != nil {
@@ -504,12 +510,11 @@ func (c *Controller) reconcileRouteAdvertisements(ctx context.Context, name stri
 		result.nodeErrors = append(result.nodeErrors, local.errs...)
 	}
 	if len(result.nads) == 0 {
-		// Whole-RA withdrawal already uses live FRR state. Wait to list
-		// NADs from the API until its FRR cleanup succeeds.
-		updates, nadErr = c.getNADUpdates(ctx, name, nil, nil)
+		// Drop the NAD references only once the FRR cleanup succeeded.
+		updates, nadErr = c.getNADUpdates(name, nil, nil)
 	} else if frrErr != nil || result.failedFRRUpdate {
 		var err error
-		updates, err = c.independentNADUpdates(ctx, name, intent, updates)
+		updates, err = c.independentNADUpdates(name, intent, updates)
 		nadErr = errors.Join(nadErr, err)
 	}
 	hadNADUpdates, err := c.applyNADUpdates(ctx, name, updates)
@@ -1305,14 +1310,14 @@ func getNodeVTEPPrefixes(node *corev1.Node, vtepCIDRs map[string][]*net.IPNet) (
 }
 
 // After a failed write, one peer can still have the old prefix while another
-// has the new one. Read back the RA's objects to count both. If the API is
-// unavailable, keep the last sample until a later reconcile can refresh it.
-func (c *Controller) recordFRRConfigurationMetrics(ctx context.Context, ra string, generated []*frrtypes.FRRConfiguration, writeFailed bool) {
+// has the new one. Count the RA's cached objects instead of the desired ones.
+// Writes of this pass are not cached yet; the retry refreshes the sample.
+func (c *Controller) recordFRRConfigurationMetrics(ra string, generated []*frrtypes.FRRConfiguration, writeFailed bool) {
 	if !config.Metrics.EnableScaleMetrics {
 		return
 	}
 	if writeFailed {
-		persisted, err := c.listExistingFRRConfigurations(ctx, ra, true)
+		persisted, err := c.listExistingFRRConfigurations(ra)
 		if err != nil {
 			klog.V(4).Infof("Could not refresh FRR configuration metrics for RouteAdvertisements %q: %v", ra, err)
 			return
@@ -1990,34 +1995,23 @@ func vtepCIDRPrefixSelectors(cidrs []string) []frrtypes.PrefixSelector {
 	return selectors
 }
 
-// The informer can lag behind our own writes. A live read lists only this RA's
-// configurations, regardless of how many other RAs use the same templates.
-func (c *Controller) listExistingFRRConfigurations(ctx context.Context, ra string, live bool) ([]*frrtypes.FRRConfiguration, error) {
-	selector := labels.Set{types.OvnRouteAdvertisementsKey: ra}.AsSelector()
-	if !live {
-		configs, err := c.frrLister.List(selector)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list cached FRRConfigurations for RouteAdvertisements %q: %w", ra, err)
-		}
-		return configs, nil
-	}
-	configs, err := c.frrClient.ApiV1beta1().FRRConfigurations(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
+// A reconcile only runs once the informer has delivered this RA's own writes,
+// so the cache is current with respect to them.
+func (c *Controller) listExistingFRRConfigurations(ra string) ([]*frrtypes.FRRConfiguration, error) {
+	configs, err := c.frrLister.List(labels.Set{types.OvnRouteAdvertisementsKey: ra}.AsSelector())
 	if err != nil {
-		return nil, fmt.Errorf("failed to list FRRConfigurations from API for RouteAdvertisements %q: %w", ra, err)
+		return nil, fmt.Errorf("failed to list FRRConfigurations for RouteAdvertisements %q: %w", ra, err)
 	}
-	existing := make([]*frrtypes.FRRConfiguration, 0, len(configs.Items))
-	for i := range configs.Items {
-		if cfg := &configs.Items[i]; cfg.Annotations[types.OvnRouteAdvertisementsKey] != "" {
-			existing = append(existing, cfg)
-		}
-	}
-	return existing, nil
+	// The label alone does not make an object one we generated.
+	return slices.DeleteFunc(configs, func(cfg *frrtypes.FRRConfiguration) bool {
+		return cfg.Annotations[types.OvnRouteAdvertisementsKey] == ""
+	}), nil
 }
 
 // deleteIncompleteVTEPConfigurations removes rejected generated configurations
 // while retaining other nodes' validated configurations on incomplete generation.
 func (c *Controller) deleteIncompleteVTEPConfigurations(ctx context.Context, name string, invalidNodes sets.Set[string]) (bool, error) {
-	existing, err := c.listExistingFRRConfigurations(ctx, name, true)
+	existing, err := c.listExistingFRRConfigurations(name)
 	if err != nil {
 		return false, err
 	}
@@ -2039,9 +2033,10 @@ func (c *Controller) deleteIncompleteVTEPConfigurations(ctx context.Context, nam
 			errs = append(errs, fmt.Errorf("failed withdrawing FRRConfiguration %s/%s: %w", config.Namespace, config.Name, err))
 			continue
 		}
+		c.pendingWrites.frrDeleted(name, config)
 		hadUpdates = true
 	}
-	c.recordFRRConfigurationMetrics(ctx, name, remaining, len(errs) > 0)
+	c.recordFRRConfigurationMetrics(name, remaining, len(errs) > 0)
 	return hadUpdates, errors.Join(errs...)
 }
 
@@ -2078,6 +2073,7 @@ func (c *Controller) withdrawMovedEgressIPs(ctx context.Context, configs []*frrt
 			continue
 		}
 		configs[i] = updated
+		c.pendingWrites.frrWritten(cfg.Labels[types.OvnRouteAdvertisementsKey], updated)
 		metrics.RecordRouteAdvertisementFRRConfigurationProcess(cfg.Labels[types.OvnRouteAdvertisementsKey], frrConfigOpUpdate)
 		changed = true
 	}
@@ -2087,12 +2083,12 @@ func (c *Controller) withdrawMovedEgressIPs(ctx context.Context, configs []*frrt
 // updateFRRConfigurations withdraws old objects for any missing desired key,
 // including failed templates on nodes where another template still works.
 // A failed withdrawal blocks replacements on that node. An EgressIP can move
-// between two healthy nodes before the informer sees the old owner's object.
-// Read from the API so its withdrawal can block publication on the new owner.
-func (c *Controller) updateFRRConfigurations(ctx context.Context, ra string, result *frrGenerationResult, updatingNADs bool) (bool, error) {
+// between two healthy nodes right after the old owner's object was written.
+// The reconcile waits for that write to reach the cache, so its withdrawal
+// can block publication on the new owner.
+func (c *Controller) updateFRRConfigurations(ctx context.Context, ra string, result *frrGenerationResult) (bool, error) {
 	var hadUpdates bool
-	readLive := updatingNADs || result.egressIPOwners != nil || len(result.frrConfigs) == 0 || len(result.nodeErrors) > 0 || len(result.invalidVTEPNodes) > 0
-	frrConfigs, err := c.listExistingFRRConfigurations(ctx, ra, readLive)
+	frrConfigs, err := c.listExistingFRRConfigurations(ra)
 	if err != nil {
 		return false, err
 	}
@@ -2122,7 +2118,7 @@ func (c *Controller) updateFRRConfigurations(ctx context.Context, ra string, res
 	generationErrors := len(result.nodeErrors)
 	defer func() {
 		writeFailed := len(withdrawalErrors) > 0 || len(result.nodeErrors) > generationErrors
-		c.recordFRRConfigurationMetrics(ctx, ra, result.frrConfigs, writeFailed)
+		c.recordFRRConfigurationMetrics(ra, result.frrConfigs, writeFailed)
 	}()
 	blockedNodes := sets.New[string]()
 	unknownNode := false
@@ -2150,6 +2146,7 @@ func (c *Controller) updateFRRConfigurations(ctx context.Context, ra string, res
 				}
 				continue
 			}
+			c.pendingWrites.frrDeleted(ra, cfg)
 			metrics.RecordRouteAdvertisementFRRConfigurationProcess(ra, frrConfigOpDelete)
 			hadUpdates = true
 		}
@@ -2176,7 +2173,7 @@ func (c *Controller) updateFRRConfigurations(ctx context.Context, ra string, res
 
 		if len(oldFRRConfigs) == 0 {
 			// does not exist, create
-			_, err := c.frrClient.ApiV1beta1().FRRConfigurations(newFRRConfig.Namespace).Create(
+			created, err := c.frrClient.ApiV1beta1().FRRConfigurations(newFRRConfig.Namespace).Create(
 				ctx,
 				newFRRConfig,
 				metav1.CreateOptions{
@@ -2187,6 +2184,7 @@ func (c *Controller) updateFRRConfigurations(ctx context.Context, ra string, res
 				result.nodeErrors = append(result.nodeErrors, fmt.Errorf("failed to create FRRConfiguration for %s: %w", key, err))
 				continue
 			}
+			c.pendingWrites.frrWritten(ra, created)
 			metrics.RecordRouteAdvertisementFRRConfigurationProcess(ra, frrConfigOpCreate)
 			hadUpdates = true
 			continue
@@ -2209,7 +2207,7 @@ func (c *Controller) updateFRRConfigurations(ctx context.Context, ra string, res
 		// otherwise update
 		newFRRConfig.Name = oldFRRConfig.Name
 		newFRRConfig.ResourceVersion = oldFRRConfig.ResourceVersion
-		_, err := c.frrClient.ApiV1beta1().FRRConfigurations(newFRRConfig.Namespace).Update(
+		updated, err := c.frrClient.ApiV1beta1().FRRConfigurations(newFRRConfig.Namespace).Update(
 			ctx,
 			newFRRConfig,
 			metav1.UpdateOptions{
@@ -2223,6 +2221,7 @@ func (c *Controller) updateFRRConfigurations(ctx context.Context, ra string, res
 			delete(existing, key) // Keep duplicates until an update succeeds.
 			continue
 		}
+		c.pendingWrites.frrWritten(ra, updated)
 		metrics.RecordRouteAdvertisementFRRConfigurationProcess(ra, frrConfigOpUpdate)
 		hadUpdates = true
 	}
@@ -2239,6 +2238,7 @@ func (c *Controller) updateFRRConfigurations(ctx context.Context, ra string, res
 				withdrawalErrors = append(withdrawalErrors, fmt.Errorf("failed to delete duplicate FRRConfiguration %s/%s for %s: %w", obsoleteFRRConfig.Namespace, obsoleteFRRConfig.Name, key.Name, err))
 				continue
 			}
+			c.pendingWrites.frrDeleted(ra, obsoleteFRRConfig)
 			metrics.RecordRouteAdvertisementFRRConfigurationProcess(ra, frrConfigOpDelete)
 			hadUpdates = true
 		}
@@ -2263,7 +2263,7 @@ func withdrawsIntent(old, next util.RouteAdvertisementsIntent) bool {
 // A network can have NADs in several namespaces. Advancing even one to a
 // newer generation can switch the entire network's VRF or clear its EgressIP
 // intent while FRR still has the old export. Independent networks can proceed.
-func (c *Controller) independentNADUpdates(ctx context.Context, ra string, intent *util.RouteAdvertisementsIntent, updates []nadUpdate) ([]nadUpdate, error) {
+func (c *Controller) independentNADUpdates(ra string, intent *util.RouteAdvertisementsIntent, updates []nadUpdate) ([]nadUpdate, error) {
 	updates = slices.DeleteFunc(updates, func(u nadUpdate) bool { return u.withdraws })
 	pendingCUDNs := sets.New[string]()
 	for _, update := range updates {
@@ -2275,15 +2275,14 @@ func (c *Controller) independentNADUpdates(ctx context.Context, ra string, inten
 		return updates, nil
 	}
 
-	// The informer may not have seen the last successful patch to a sibling
-	// NAD. Its resource version is independent of the NAD we would patch.
-	list, err := c.nadClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	// A sibling NAD has its own resource version, so the conditional patch
+	// does not cover it. The cache has this RA's last patch to it.
+	nads, err := c.nadLister.List(labels.Everything())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list NADs before advancing intent for RouteAdvertisements %q: %w", ra, err)
 	}
 	held := sets.New[string]()
-	for i := range list.Items {
-		nad := &list.Items[i]
+	for _, nad := range nads {
 		name := owningCUDN(nad)
 		if !pendingCUDNs.Has(name) {
 			continue
@@ -2299,30 +2298,18 @@ func (c *Controller) independentNADUpdates(ctx context.Context, ra string, inten
 	return slices.DeleteFunc(updates, func(u nadUpdate) bool { return held.Has(owningCUDN(u.nad)) }), nil
 }
 
-func (c *Controller) getNADUpdates(ctx context.Context, ra string, intent *util.RouteAdvertisementsIntent, nads []*nadtypes.NetworkAttachmentDefinition) ([]nadUpdate, error) {
+func (c *Controller) getNADUpdates(ra string, intent *util.RouteAdvertisementsIntent, nads []*nadtypes.NetworkAttachmentDefinition) ([]nadUpdate, error) {
 	var updates []nadUpdate
 	selected := sets.New[string]()
 	for _, nad := range nads {
 		selected.Insert(nad.Namespace + "/" + nad.Name)
 	}
 
-	if len(selected) == 0 {
-		// An RA can be deleted before the informer sees its last NAD patch.
-		// Use the API for withdrawal so a stale cache cannot leave its intent behind.
-		list, err := c.nadClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to list NADs for withdrawal of RouteAdvertisements %q: %w", ra, err)
-		}
-		nads = make([]*nadtypes.NetworkAttachmentDefinition, len(list.Items))
-		for i := range list.Items {
-			nads[i] = &list.Items[i]
-		}
-	} else {
-		var err error
-		nads, err = c.nadLister.List(labels.Everything())
-		if err != nil {
-			return nil, err
-		}
+	// An RA can be deleted right after its last NAD patch. The reconcile
+	// waited for that patch, so the cache cannot leave its intent behind.
+	nads, err := c.nadLister.List(labels.Everything())
+	if err != nil {
+		return nil, fmt.Errorf("failed to list NADs for RouteAdvertisements %q: %w", ra, err)
 	}
 
 	for _, nad := range nads {
@@ -2384,7 +2371,7 @@ func (c *Controller) applyNADUpdates(ctx context.Context, ra string, updates []n
 		// Two RAs can select the same NAD before the informer sees the first
 		// patch. Retry from a newer version to preserve the other RA's entry.
 		nad := update.nad
-		err := k.SetAnnotationsOnNADAtVersion(
+		patched, err := k.SetAnnotationsOnNADAtVersion(
 			ctx,
 			nad.Namespace,
 			nad.Name,
@@ -2395,6 +2382,7 @@ func (c *Controller) applyNADUpdates(ctx context.Context, ra string, updates []n
 		if err != nil {
 			return i > 0, fmt.Errorf("failed to annotate NAD %q: %w", nad.Name, err)
 		}
+		c.pendingWrites.nadWritten(ra, patched)
 		metrics.RecordRouteAdvertisementNADUpdate(ra)
 	}
 	return len(updates) > 0, nil
@@ -2668,6 +2656,17 @@ func (c *Controller) frrConfigurationNeedsUpdate(oldObj, newObj *frrtypes.FRRCon
 		(newObj != nil && strings.HasPrefix(newObj.Name, generateName))
 	// With EVPN, other RAs use generated prefixes to identify the VTEP owner.
 	sharedUnderlay := generated && util.IsEVPNEnabled()
+	if newObj != nil {
+		// Our own write coming back needs no reconcile, unless its RA was
+		// held back until the cache had it.
+		ra, held, own := c.pendingWrites.frrObserved(newObj)
+		if held {
+			c.raController.Reconcile(ra)
+		}
+		if own && !sharedUnderlay {
+			return false
+		}
+	}
 	if newObj != nil && !sharedUnderlay {
 		own := isOwnUpdate(newObj.ManagedFields)
 		// The RA may have dropped a template or prefix while the informer
@@ -2687,6 +2686,16 @@ func (c *Controller) frrConfigurationNeedsUpdate(oldObj, newObj *frrtypes.FRRCon
 }
 
 func (c *Controller) nadNeedsUpdate(oldObj, newObj *nadtypes.NetworkAttachmentDefinition) bool {
+	if newObj != nil {
+		// Our own patch coming back changes no other RA's entry.
+		ra, held, own := c.pendingWrites.nadObserved(newObj)
+		if held {
+			c.raController.Reconcile(ra)
+		}
+		if own {
+			return false
+		}
+	}
 	if newObj != nil && isOwnUpdate(newObj.ManagedFields) && (oldObj == nil || reflect.DeepEqual(oldObj.Labels, newObj.Labels)) {
 		var oldAnnotations map[string]string
 		if oldObj != nil {
@@ -2784,6 +2793,17 @@ func (c *Controller) reconcileFRRConfiguration(_ context.Context, key string) er
 	frrConfig, err := c.frrLister.FRRConfigurations(namespace).Get(name)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
+	}
+
+	// A configuration we deleted ourselves affects no other RA, unless EVPN
+	// RAs use its prefixes to identify the VTEP owner.
+	if frrConfig == nil && !util.IsEVPNEnabled() {
+		if ra, held := c.pendingWrites.frrDeletionObserved(key); ra != "" {
+			if held {
+				c.raController.Reconcile(ra)
+			}
+			return nil
+		}
 	}
 
 	// A template label or node-selector edit can affect both RAs that used it

@@ -11,6 +11,7 @@ import (
 
 	ipamclaimsapi "github.com/k8snetworkplumbingwg/ipamclaims/pkg/crd/ipamclaims/v1alpha1"
 	ipamclaimssclientset "github.com/k8snetworkplumbingwg/ipamclaims/pkg/crd/ipamclaims/v1alpha1/apis/clientset/versioned"
+	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	nadclientset "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned"
 	ocpcloudnetworkapi "github.com/openshift/api/cloudnetwork/v1"
 	ocpcloudnetworkclientset "github.com/openshift/client-go/cloudnetwork/clientset/versioned"
@@ -675,20 +676,21 @@ func (k *KubeOVN) UpdateIPAMClaimIPs(ctx context.Context, updatedIPAMClaim *ipam
 
 // SetAnnotationsOnNAD takes a NAD namespace and name and a map of key/value string pairs to set as annotations
 func (k *KubeOVN) SetAnnotationsOnNAD(ctx context.Context, namespace, name string, annotations map[string]string, fieldManager string) error {
-	return k.SetAnnotationsOnNADAtVersion(ctx, namespace, name, "", annotations, fieldManager)
+	_, err := k.SetAnnotationsOnNADAtVersion(ctx, namespace, name, "", annotations, fieldManager)
+	return err
 }
 
 // SetAnnotationsOnNADAtVersion makes a patch conditional on the version used
 // to compute the annotations. An empty version makes the patch unconditional.
-func (k *KubeOVN) SetAnnotationsOnNADAtVersion(ctx context.Context, namespace, name, resourceVersion string, annotations map[string]string, fieldManager string) error {
+// It returns the patched NAD.
+func (k *KubeOVN) SetAnnotationsOnNADAtVersion(ctx context.Context, namespace, name, resourceVersion string, annotations map[string]string, fieldManager string) (*nadv1.NetworkAttachmentDefinition, error) {
 	metadata := map[string]any{"annotations": annotations}
 	if resourceVersion != "" {
 		metadata["resourceVersion"] = resourceVersion
 	}
 	patchData, err := json.Marshal(map[string]any{"metadata": metadata})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, err = k.NADClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(namespace).Patch(ctx, name, types.MergePatchType, patchData, metav1.PatchOptions{FieldManager: fieldManager})
-	return err
+	return k.NADClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(namespace).Patch(ctx, name, types.MergePatchType, patchData, metav1.PatchOptions{FieldManager: fieldManager})
 }

@@ -23,7 +23,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
@@ -62,9 +61,10 @@ func TestSharedNADRetainsBothAdvertisements(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	c := Controller{nadClient: client, nadLister: nadlisters.NewNetworkAttachmentDefinitionLister(indexer)}
+	nadLister := nadlisters.NewNetworkAttachmentDefinitionLister(indexer)
+	c := Controller{pendingWrites: newPendingWrites(nil, nadLister), nadClient: client, nadLister: nadLister}
 	updateWest := func() error {
-		updates, err := c.getNADUpdates(ctx, "west", &util.RouteAdvertisementsIntent{TargetVRF: "green"}, []*nadtypes.NetworkAttachmentDefinition{stale})
+		updates, err := c.getNADUpdates("west", &util.RouteAdvertisementsIntent{TargetVRF: "green"}, []*nadtypes.NetworkAttachmentDefinition{stale})
 		g.Expect(err).NotTo(gomega.HaveOccurred(), "prepare west's NAD update")
 		_, err = c.applyNADUpdates(ctx, "west", updates)
 		return err
@@ -80,12 +80,15 @@ func TestSharedNADRetainsBothAdvertisements(t *testing.T) {
 	g.Expect(nad.Annotations[types.OvnRouteAdvertisementsIntentKey]).To(gomega.MatchJSON(`{"east":{"targetVRF":"red"},"west":{"targetVRF":"green"}}`))
 	both := nad.DeepCopy()
 
-	// West is deleted before its successful patch reaches the informer.
-	updates, err := c.getNADUpdates(ctx, "west", nil, nil)
+	// West is deleted right after its patch. Its reconcile waits for the
+	// patch to reach the informer before withdrawing.
+	g.Expect(indexer.Update(both)).To(gomega.Succeed())
+	updates, err := c.getNADUpdates("west", nil, nil)
 	g.Expect(err).NotTo(gomega.HaveOccurred(), "prepare withdrawal against the current NAD")
 	updated, err := c.applyNADUpdates(ctx, "west", updates)
 	g.Expect(err).NotTo(gomega.HaveOccurred(), "withdraw west using the current NAD")
-	g.Expect(updated).To(gomega.BeTrue(), "withdraw west even though the cache only knows about east")
+	g.Expect(updated).To(gomega.BeTrue(), "withdraw west")
+	g.Expect(c.pendingWrites.wait("west")).To(gomega.BeZero(), "west's patches are cached")
 	nad, err = nads.Get(ctx, live.Name, metav1.GetOptions{})
 	g.Expect(err).NotTo(gomega.HaveOccurred(), "get the shared NAD after withdrawal")
 	g.Expect(nad.Annotations[types.OvnRouteAdvertisementsKey]).To(gomega.MatchJSON(`["east"]`))
@@ -340,6 +343,10 @@ func TestControllerRetriesIndependentTemplateWrites(t *testing.T) {
 				return false, nil, nil
 			})
 			g.Expect(errors.Is(tt.c.reconcile(ctx, "ra"), failure)).To(gomega.BeTrue(), "retry the failed %s", verb)
+			// A failed pass counts the cache from before its own writes. The
+			// retry runs once they are cached and refreshes the sample.
+			tt.waitForFRRCache()
+			g.Expect(errors.Is(tt.c.reconcile(ctx, "ra"), failure)).To(gomega.BeTrue(), "retry the failed %s", verb)
 			ra := tt.expectRAStatus(true, true)
 			g.Expect(meta.FindStatusCondition(ra.Status.Conditions, conditionTypeDegraded).Message).To(gomega.ContainSubstring("ra/first/node"))
 			configs := tt.generatedConfigs("ra")
@@ -351,16 +358,6 @@ func TestControllerRetriesIndependentTemplateWrites(t *testing.T) {
 			} else {
 				g.Expect(configs["ra/first/node"].Spec.BGP.Routers[0].Prefixes).To(gomega.ContainElement("1.1.0.0/24"), "an unsuccessful update leaves the last API object in place")
 				expectFRRMetrics(t, "ra", 2, 2, 0)
-				failList := true
-				client.PrependReactor("list", "frrconfigurations", func(ctesting.Action) (bool, runtime.Object, error) {
-					if failList {
-						return true, nil, errors.New("metrics read unavailable")
-					}
-					return false, nil, nil
-				})
-				g.Expect(errors.Is(tt.c.reconcile(ctx, "ra"), failure)).To(gomega.BeTrue(), "a failed metrics read must preserve the write error")
-				expectFRRMetrics(t, "ra", 2, 2, 0)
-				failList = false
 			}
 			nadKey := config.Default.ClusterDefaultNetworkNAD
 			nads := tt.c.nadClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(nadKey.Namespace)
@@ -436,15 +433,10 @@ func TestControllerAttemptsAllFRRWithdrawals(t *testing.T) {
 			})
 			client.ClearActions()
 			result := frrGenerationResult{frrConfigs: []*frrapi.FRRConfiguration{desired}}
-			changed, err := tt.c.updateFRRConfigurations(ctx, "ra", &result, false)
+			changed, err := tt.c.updateFRRConfigurations(ctx, "ra", &result)
 			g.Expect(changed).To(gomega.BeTrue())
 			for _, failure := range failures {
 				g.Expect(errors.Is(err, failure)).To(gomega.BeTrue())
-			}
-			if scenario == "unknown node" {
-				expectFRRMetrics(t, "ra", 2, 1, 0)
-			} else {
-				expectFRRMetrics(t, "ra", 3, 1, 0)
 			}
 			if duplicates {
 				g.Expect(attempts).To(gomega.Equal(3), "retain one desired object and attempt every duplicate deletion")
@@ -467,8 +459,11 @@ func TestControllerAttemptsAllFRRWithdrawals(t *testing.T) {
 			}
 			tt.waitForFRRCache()
 			// Failed objects remain retryable; after success the desired config is published.
-			_, err = tt.c.updateFRRConfigurations(ctx, "ra", &result, false)
+			_, err = tt.c.updateFRRConfigurations(ctx, "ra", &result)
 			g.Expect(err).NotTo(gomega.HaveOccurred())
+			// A failed pass samples the cache as it catches up. Only the
+			// successful retry gives a definite count.
+			expectFRRMetrics(t, "ra", 1, 1, 0)
 			remaining := tt.generatedConfigs("ra")
 			key := desired.Annotations[types.OvnRouteAdvertisementsKey]
 			g.Expect(remaining).To(gomega.HaveLen(1))
@@ -481,10 +476,10 @@ func TestControllerAttemptsAllFRRWithdrawals(t *testing.T) {
 	}
 }
 
-// Deletion needs neither prefix ownership nor an informer that has observed the
-// previous publish. Read failures, however, must leave the existing state alone.
-func TestWholeWithdrawalReadsAPIAndRetries(t *testing.T) {
-	for _, scenario := range []string{"stale cache", "read failure", "generation read failure"} {
+// Deletion needs no prefix ownership. A generation read failure, however,
+// must leave the existing state alone.
+func TestWholeWithdrawalRetries(t *testing.T) {
+	for _, scenario := range []string{"withdrawal", "generation read failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			g := gomega.NewWithT(t)
 			ctx := context.Background()
@@ -493,31 +488,18 @@ func TestWholeWithdrawalReadsAPIAndRetries(t *testing.T) {
 			other.Labels[types.OvnRouteAdvertisementsKey] = "other"
 			other.Annotations[types.OvnRouteAdvertisementsKey] = "other/frrConfig/node"
 			tt := newFRRReconcileTest(t, g, "eth0", old, other)
-			tt.c.frrLister = frrlisters.NewFRRConfigurationLister(cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{}))
 			client := tt.fakeClientset.FRRClient.(*frrfake.Clientset)
-			failRead := scenario == "read failure"
-			readErr := errors.New("injected read failure")
-			client.PrependReactor("list", "frrconfigurations", func(ctesting.Action) (bool, runtime.Object, error) {
-				if failRead {
-					return true, nil, readErr
-				}
-				return false, nil, nil
-			})
 			result := frrGenerationResult{err: errConfig}
 			if scenario == "generation read failure" {
 				result.err = errors.New("injected generation read failure")
 			}
 			_, err := tt.c.reconcileRouteAdvertisements(ctx, "ra", nil, &result)
-			if scenario == "read failure" || scenario == "generation read failure" {
+			if scenario == "generation read failure" {
 				g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("injected")))
-				if scenario == "read failure" {
-					g.Expect(errors.Is(err, readErr)).To(gomega.BeTrue(), "withdrawal must preserve the underlying API read error")
-				}
 				g.Expect(errors.Is(err, errConfig)).To(gomega.BeFalse(), "read failures must remain retryable even when withdrawing an invalid RA")
 				_, getErr := client.ApiV1beta1().FRRConfigurations(old.Namespace).Get(ctx, old.Name, metav1.GetOptions{})
 				g.Expect(getErr).NotTo(gomega.HaveOccurred())
 				g.Expect(tt.defaultNADAnnotations()[types.OvnRouteAdvertisementsKey]).To(gomega.Equal(`["ra","other"]`))
-				failRead = false
 				_, err = tt.c.reconcileRouteAdvertisements(ctx, "ra", nil, &frrGenerationResult{err: errConfig})
 			}
 			g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -558,15 +540,16 @@ func TestRollbackAfterNADPatchFailure(t *testing.T) {
 	g.Expect(reconcileVRF("blue", 1)).To(gomega.Succeed(), "publish the initial intent")
 	tt.waitForDefaultNADCache()
 	tt.waitForFRRCache()
-	tt.c.frrLister = tt.frrCacheWithout("")
 
 	tt.failNADPatch.Store(true)
 	g.Expect(reconcileVRF("red", 2)).To(gomega.MatchError(gomega.ContainSubstring("injected NAD patch failure")))
 	expectExport("red")
 	g.Expect(tt.defaultNADAnnotations()[types.OvnRouteAdvertisementsIntentKey]).To(gomega.MatchJSON(`{"ra":{"generation":1,"targetVRF":"blue"}}`), "the failed patch leaves the older intent in place")
 
-	// The informer still shows blue. Observe the API at the moment the NAD
-	// advances so a later FRR write cannot hide incorrect ordering.
+	// The rollback runs once the informer shows the red export. Observe the
+	// API at the moment the NAD advances so a later FRR write cannot hide
+	// incorrect ordering.
+	tt.waitForFRRCache()
 	tt.failNADPatch.Store(false)
 	tt.fakeClientset.NetworkAttchDefClient.(Fake).PrependReactor("patch", "network-attachment-definitions", func(ctesting.Action) (bool, runtime.Object, error) {
 		expectExport("blue")
@@ -633,22 +616,15 @@ func TestPartialDeselectionWithdrawsBeforeClearingNAD(t *testing.T) {
 			g.Expect(err).NotTo(gomega.HaveOccurred(), "seed blue's previously published intent")
 			g.Eventually(func() (*nadtypes.NetworkAttachmentDefinition, error) {
 				return tt.c.nadLister.NetworkAttachmentDefinitions(blue.Namespace).Get(blue.Name)
-			}, 5*time.Second).Should(gomega.Equal(blue), "observe blue's NAD while its FRR configuration is still missing from the cache")
-			tt.c.frrLister = tt.frrCacheWithout(old.Name)
-			// The API has generation 2 on red/red, but the informer still
-			// shows generation 1 in both namespaces when the rollback starts.
-			nadLister := tt.c.nadLister
-			stale := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
-			cached, err := nadLister.List(labels.Everything())
-			g.Expect(err).NotTo(gomega.HaveOccurred(), "snapshot the NAD cache")
-			for _, nad := range cached {
-				if nad.Namespace == "red" && nad.Name == "red" {
-					nad = nad.DeepCopy()
-					nad.Annotations[types.OvnRouteAdvertisementsIntentKey] = gen1
+			}, 5*time.Second).Should(gomega.Equal(blue), "observe blue's NAD")
+			// Red's namespaces disagree: only red/red has generation 2.
+			g.Eventually(func() (string, error) {
+				nad, err := tt.c.nadLister.NetworkAttachmentDefinitions("red").Get("red")
+				if err != nil {
+					return "", err
 				}
-				g.Expect(stale.Add(nad)).To(gomega.Succeed(), "cache NAD %s/%s", nad.Namespace, nad.Name)
-			}
-			tt.c.nadLister = nadlisters.NewNetworkAttachmentDefinitionLister(stale)
+				return nad.Annotations[types.OvnRouteAdvertisementsIntentKey], nil
+			}, 5*time.Second).Should(gomega.MatchJSON(gen2), "observe red's newest intent")
 
 			client := tt.fakeClientset.FRRClient.(*frrfake.Clientset)
 			failure := errors.New("injected " + tc.verb + " failure")
@@ -685,8 +661,8 @@ func TestPartialDeselectionWithdrawsBeforeClearingNAD(t *testing.T) {
 				return false, nil, nil
 			})
 			reject = false
-			tt.c.nadLister = nadLister
-			g.Expect(tt.c.reconcile(ctx, "ra")).To(gomega.Succeed(), "retry while the FRR cache still lacks blue's export")
+			tt.waitForDefaultNADCache()
+			g.Expect(tt.c.reconcile(ctx, "ra")).To(gomega.Succeed(), "retry the withdrawal")
 			configs := tt.generatedConfigs("ra")
 			g.Expect(configs).To(gomega.HaveLen(1), "withdraw blue's obsolete configuration")
 			g.Expect(configs).To(gomega.HaveKey("ra/frrConfig/node"), "publish the selected networks")
@@ -699,4 +675,71 @@ func TestPartialDeselectionWithdrawsBeforeClearingNAD(t *testing.T) {
 			g.Expect(current.Annotations[types.OvnRouteAdvertisementsIntentKey]).To(gomega.MatchJSON(`{"other":{"targetVRF":"green"}}`), "preserve the other RA's intent")
 		})
 	}
+}
+
+// A reconcile must not compare desired state with a cache that lacks the
+// RouteAdvertisements' own last writes.
+func TestPendingWritesHoldReconcile(t *testing.T) {
+	g := gomega.NewWithT(t)
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	queue := &controllerutil.FakeController{}
+	frrLister := frrlisters.NewFRRConfigurationLister(indexer)
+	nadLister := nadlisters.NewNetworkAttachmentDefinitionLister(cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{}))
+	c := Controller{
+		frrLister:     frrLister,
+		nadLister:     nadLister,
+		raController:  queue,
+		pendingWrites: newPendingWrites(frrLister, nadLister),
+	}
+	cached := &frrapi.FRRConfiguration{ObjectMeta: metav1.ObjectMeta{Namespace: "frr", Name: "updated", UID: "updated", ResourceVersion: "1"}}
+	deleted := &frrapi.FRRConfiguration{ObjectMeta: metav1.ObjectMeta{Namespace: "frr", Name: "deleted", UID: "deleted", ResourceVersion: "1"}}
+	g.Expect(indexer.Add(cached)).To(gomega.Succeed())
+	g.Expect(indexer.Add(deleted)).To(gomega.Succeed())
+
+	written := cached.DeepCopy()
+	written.ResourceVersion = "2"
+	c.pendingWrites.frrWritten("ra", written)
+	c.pendingWrites.frrDeleted("ra", deleted)
+	g.Expect(c.pendingWrites.wait("other")).To(gomega.BeZero(), "another RA is not held")
+	g.Expect(c.reconcile(t.Context(), "ra")).To(gomega.Succeed())
+	g.Expect(queue.Reconciles).To(gomega.HaveLen(1), "the held RA is only rescheduled for the timeout")
+	g.Expect(queue.Reconciles[0]).To(gomega.Equal("After:ra"))
+
+	// A stale event does not release the RA; the written version does.
+	queue.Reconciles = nil
+	ra, _, _ := c.pendingWrites.frrObserved(cached)
+	g.Expect(ra).To(gomega.BeEmpty())
+	g.Expect(c.frrConfigurationNeedsUpdate(cached, written)).To(gomega.BeFalse(), "our own write needs no cluster-wide reconcile")
+	g.Expect(queue.Reconciles).To(gomega.Equal([]string{"Reconcile:ra"}), "wake the held RA")
+	g.Expect(c.pendingWrites.wait("ra")).NotTo(gomega.BeZero(), "the deleted object is still cached")
+	g.Expect(indexer.Delete(deleted)).To(gomega.Succeed())
+	queue.Reconciles = nil
+	g.Expect(c.reconcileFRRConfiguration(t.Context(), "frr/deleted")).To(gomega.Succeed())
+	g.Expect(queue.Reconciles).To(gomega.Equal([]string{"Reconcile:ra"}), "our own deletion only wakes the held RA")
+	g.Expect(c.pendingWrites.wait("ra")).To(gomega.BeZero())
+
+	// An RA that is not held is not reconciled for its own write.
+	queue.Reconciles = nil
+	written = written.DeepCopy()
+	written.ResourceVersion = "3"
+	c.pendingWrites.frrWritten("ra", written)
+	g.Expect(c.frrConfigurationNeedsUpdate(cached, written)).To(gomega.BeFalse())
+	g.Expect(queue.Reconciles).To(gomega.BeEmpty())
+
+	// A relist can skip our version. A later one releases the RA, but is
+	// someone else's change and is not ignored.
+	c.pendingWrites.frrWritten("ra", written)
+	g.Expect(c.pendingWrites.wait("ra")).NotTo(gomega.BeZero())
+	later := written.DeepCopy()
+	later.ResourceVersion = "10"
+	ra, held, own := c.pendingWrites.frrObserved(later)
+	g.Expect(ra).To(gomega.Equal("ra"))
+	g.Expect(held).To(gomega.BeTrue())
+	g.Expect(own).To(gomega.BeFalse())
+	g.Expect(c.pendingWrites.wait("ra")).To(gomega.BeZero())
+
+	// An event delivered before its write was recorded is found in the cache.
+	g.Expect(indexer.Update(written)).To(gomega.Succeed())
+	c.pendingWrites.frrWritten("ra", written)
+	g.Expect(c.pendingWrites.wait("ra")).To(gomega.BeZero())
 }

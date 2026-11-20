@@ -1004,6 +1004,11 @@ NAD references are removed only after deletion succeeds. A failure to read the
 inputs or write the API is retried; it is not itself evidence of invalid input.
 FRR applies changes asynchronously, so API deletion does not confirm BGP withdrawal.
 
+The controller compares the desired state with its informer caches. It does not
+reconcile a `RouteAdvertisements` again until those caches have received the
+`FRRConfiguration` and NAD changes it made on the previous pass, or 10 seconds
+have passed.
+
 Node-specific VTEP validation continues to exclude invalid nodes while applying
 configurations generated for the other nodes. If another input error prevents a
 complete result, known invalid VTEP configurations are still withdrawn. An API read
